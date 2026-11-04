@@ -29,18 +29,35 @@ class SecurityError(Exception):
     pass
 
 
-def parse_security_types(text):
+def parse_security_types(text, log=lambda msg: None):
+    """Parse a TigerVNC SecurityTypes list.
+
+    Types TigerVNC supports but this port lacks (RA2, DH, ...) are logged
+    and skipped, so .tigervnc files written by TigerVNC still work.  Only
+    a list with no usable type at all, or a name nobody knows, is an error.
+    """
     types = []
+    skipped = []
+    lower = {k.lower(): v for k, v in enc.SEC_NAMES.items()}
+    unsupported = {k.lower(): k for k in enc.SEC_UNSUPPORTED_NAMES}
     for name in text.split(","):
         name = name.strip()
         if not name:
             continue
-        for key, value in enc.SEC_NAMES.items():
-            if key.lower() == name.lower():
-                types.append(value)
-                break
+        key = name.lower()
+        if key in lower:
+            if lower[key] not in types:
+                types.append(lower[key])
+        elif key in unsupported:
+            skipped.append(unsupported[key])
         else:
             raise ValueError("Unknown security type %r" % name)
+    if skipped:
+        log("Security types not supported by SagatVNC, skipped: %s" %
+            ", ".join(skipped))
+    if not types:
+        raise ValueError("None of the requested security types (%s) are "
+                         "supported by SagatVNC" % text)
     return types
 
 
@@ -78,8 +95,13 @@ class SecurityHandler:
     # -- simple types -------------------------------------------------------
     def vnc_auth(self):
         challenge = self.conn.stream.read(16)
+        self.conn.log("VNC authentication challenge received")
         _, password = self.conn.get_credentials(False)
+        if len(password) > 8:
+            self.conn.log("Note: VNC passwords are limited to 8 characters; "
+                          "only the first 8 are used")
         self.conn.stream.write(vnc_auth_response(password, challenge))
+        self.conn.log("VNC authentication response sent")
 
     def plain(self):
         user, password = self.conn.get_credentials(True)
@@ -103,9 +125,12 @@ class SecurityHandler:
         if not count:
             raise SecurityError("The server reported no VeNCrypt sub-types")
         offered = [s.u32() for _ in range(count)]
-        enabled = self.conn.options.security_types
-        chosen = next((t for t in offered if t in enabled
-                       and is_vencrypt_subtype(t)), None)
+        # Security::GetEnabledExtSecTypes(): every enabled type except
+        # VeNCrypt itself, so None/VncAuth work as sub-types too (Vino);
+        # the server's order is honoured (CSecurityVeNCrypt::processMsg)
+        enabled = [t for t in self.conn.options.security_types
+                   if t != enc.SEC_VENCRYPT]
+        chosen = next((t for t in offered if t in enabled), None)
         if chosen is None:
             raise SecurityError("No valid VeNCrypt sub-type (server offers %s)"
                                 % ", ".join(enc.sec_name(t) for t in offered))
@@ -113,6 +138,11 @@ class SecurityHandler:
                       (enc.sec_name(chosen), chosen))
         s.write(struct.pack(">I", chosen))
 
+        if chosen == enc.SEC_NONE:
+            return
+        if chosen == enc.SEC_VNC_AUTH:
+            self.vnc_auth()
+            return
         if chosen == enc.SEC_PLAIN:
             self.plain()
             return
@@ -149,6 +179,9 @@ class SecurityHandler:
                                server_hostname=None if anon or not ca
                                else self.conn.host)
         self.conn.stream.replace_socket(sock)
+        cipher = sock.cipher()
+        self.conn.log("TLS established: %s, %s" %
+                      (sock.version(), cipher[0] if cipher else "?"))
         if not anon and not ca:
             self._check_known_host(sock)
         self.secure = not anon

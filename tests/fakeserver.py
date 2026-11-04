@@ -58,6 +58,21 @@ class BytesStream:
     def skip(self, n):
         self.read(n)
 
+    @property
+    def position(self):
+        return self.pos
+
+    def read_jpeg_entropy(self):
+        d, i = self.data, self.pos
+        while True:
+            i = d.index(b"\xff", i)
+            nxt = d[i + 1]
+            if nxt == 0x00 or 0xD0 <= nxt <= 0xD7:
+                i += 2
+                continue
+            out, self.pos = d[self.pos:i], i
+            return out
+
 
 # -- encoders -----------------------------------------------------------------
 def encode_raw(rgb):
@@ -281,8 +296,21 @@ class FakeServer:
             return ("ptr", x, y, mask)
         if t == 6:
             self.recv(3)
-            n = struct.unpack(">I", self.recv(4))[0]
+            n = struct.unpack(">i", self.recv(4))[0]
+            if n < 0:                      # extended clipboard
+                flags = struct.unpack(">I", self.recv(4))[0]
+                return ("extclip", flags, self.recv(-n - 4))
             return ("cut", self.recv(n).decode("latin-1"))
+        if t == 248:
+            self.recv(3)
+            flags, n = struct.unpack(">IB", self.recv(5))
+            return ("fence", flags, self.recv(n))
+        if t == 150:
+            enable, x, y, w, h = struct.unpack(">BHHHH", self.recv(9))
+            return ("cu", enable, x, y, w, h)
+        if t == 255:
+            sub, down, ks, kc = struct.unpack(">BHII", self.recv(11))
+            return ("qemukey", ks, kc, down)
         if t == 251:
             self.recv(1)
             w, h, n = struct.unpack(">HHBx", self.recv(6))
@@ -295,6 +323,21 @@ class FakeServer:
             m = self.read_client_message()
             self.received.append(m)
             if m[0] == kind:
+                return m
+
+    def sync(self):
+        """Wait until the client has fully processed what we sent.
+
+        The viewer asks for the next update when an update *starts*
+        (TigerVNC framebufferUpdateStart), so seeing that request doesn't
+        mean the update was decoded.  A fence request is answered only
+        once everything before it has been processed."""
+        self.sync_count = getattr(self, "sync_count", 0) + 1
+        token = b"sync%d" % self.sync_count
+        self.send(struct.pack(">B3xIB", 248, 1 << 31, len(token)) + token)
+        while True:
+            m = self.wait_for("fence")
+            if m[2] == token:
                 return m
 
     @staticmethod

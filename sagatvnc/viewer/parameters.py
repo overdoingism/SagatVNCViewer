@@ -58,6 +58,34 @@ PARAMS = [
     Param("RemoteResize", bool, True,
           "Dynamically resize the remote desktop size as the size of the "
           "local client window changes"),
+    Param("Scaling", str, "Auto",
+          "Scale the remote desktop to the window: Auto (fit the window, "
+          "keeping the aspect ratio; Lanczos-3 when shrinking, bicubic "
+          "when enlarging) or Off (1:1 with scrollbars). SagatVNC only; "
+          "needs Pillow"),
+    Param("RemoteCursorShape", bool, False,
+          "Show the cursor shape the server sends instead of the local "
+          "system arrow (Windows only). The server is always asked for "
+          "the shape, so it never draws its own cursor into the desktop "
+          "image. SagatVNC only"),
+    Param("AlwaysCursor", bool, False,
+          "Show local cursor when not provided by the server "
+          "(with RemoteCursorShape)"),
+    Param("CursorType", str, "Dot",
+          "Specify which local cursor type should be used when "
+          "AlwaysCursor is active (Dot, System)"),
+    Param("RemoteDpiScale", int, 100,
+          "Compensate a server that is not DPI aware (e.g. TigerVNC's "
+          "winvnc on a Windows desktop scaled to 150%), where the remote "
+          "pointer drifts further off towards the bottom right: set it to "
+          "the remote display's scale in percent. Only for servers whose "
+          "CLICKS land in the wrong place - not for a misplaced cursor "
+          "picture, which the local cursor shape fixes. SagatVNC only",
+          aliases=("DPI",)),
+    Param("LocalInputMethod", bool, False,
+          "Use the local input method (IME) in the viewer window. Off: "
+          "keys go straight to the server, so use the remote computer's "
+          "IME. SagatVNC only, Windows"),
     Param("DesktopSize", str, "",
           "Reconfigure the desktop size on the server to WxH upon connection"),
     Param("SecurityTypes", str, enc.DEFAULT_SECURITY,
@@ -70,7 +98,17 @@ PARAMS = [
           "trusted on first use)"),
     Param("AutoSelect", bool, True, "Auto select encoding"),
     Param("PreferredEncoding", str, "Tight",
-          "Preferred encoding to use (Tight, ZRLE, Hextile, RRE, Raw)"),
+          "Preferred encoding to use (Tight, JPEG, ZRLE, Hextile, Raw)"),
+    Param("FullColor", bool, True, "Use all available colors",
+          aliases=("FullColour",)),
+    Param("LowColorLevel", int, 2,
+          "Color level to use on slow connections. 0 = Very Low (8 "
+          "colors), 1 = Low (64 colors), 2 = Medium (256 colors)",
+          aliases=("LowColourLevel",)),
+    Param("QualityLevel", int, 8,
+          "JPEG quality level, 0 = Low, 9 = High (needs Pillow)"),
+    Param("NoJPEG", bool, False,
+          "Disable lossy JPEG compression in Tight encoding"),
     Param("CustomCompressLevel", bool, False,
           "Use custom compression level as specified by CompressLevel"),
     Param("CompressLevel", int, 2,
@@ -78,6 +116,8 @@ PARAMS = [
     Param("AcceptClipboard", bool, True, "Accept clipboard changes from the "
           "server"),
     Param("SendClipboard", bool, True, "Send clipboard changes to the server"),
+    Param("MaxCutText", int, 256 * 1024,
+          "Maximum permitted length of an incoming clipboard update"),
     Param("MenuKey", str, "F8", "The key which brings up the popup menu "
           "(a Tk keysym name, or empty to disable)"),
     Param("PointerEventInterval", int, 17,
@@ -202,28 +242,43 @@ def parse_server(text, default_port=5900):
     ``host``, ``host:N`` (display N -> port 5900+N, or a port if N >= 100),
     ``host::port`` and ``[ipv6]:N`` are understood.
     """
-    s = text.strip()
+    # Port of network::getHostAndPort() (common/network/TcpSocket.cxx)
+    s = text.lstrip()
     if s.startswith("["):
         end = s.find("]")
         if end < 0:
-            raise ValueError("Invalid IPv6 address %r" % text)
+            raise ValueError("Unmatched [ in hostname")
         host, rest = s[1:end], s[end + 1:]
+        if not rest.strip():
+            rest = ""
     else:
-        idx = s.find(":")
-        host, rest = (s, "") if idx < 0 else (s[:idx], s[idx:])
-    host = host or "localhost"
+        host_end = s.rfind(":")
+        if host_end < 0:
+            host, rest = s, ""
+        else:
+            if host_end > 0 and s[host_end - 1] == ":":
+                host_end -= 1                     # host::port
+            port_start = s.find(":")
+            if port_start != host_end:
+                # More colons in the host: a bare IPv6 address, no port
+                host, rest = s, ""
+            else:
+                host, rest = s[:host_end], s[host_end:]
+    host = host.rstrip() or "localhost"
     if not rest:
         return host, default_port
+    rest = rest.rstrip()
     try:
+        if not rest.startswith(":"):
+            raise ValueError
         if rest.startswith("::"):
             port = int(rest[2:])
-        elif rest.startswith(":"):
-            n = int(rest[1:])
-            port = n + default_port if n < 100 else n
         else:
-            raise ValueError
+            port = int(rest[1:])
+            if port < 100:
+                port += default_port
     except ValueError:
-        raise ValueError("Invalid server specification %r" % text)
+        raise ValueError("Invalid port specified in %r" % text)
     if not 0 < port < 65536:
         raise ValueError("Invalid port in %r" % text)
     return host, port

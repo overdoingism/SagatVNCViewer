@@ -19,14 +19,27 @@ def _has_console():
     return sys.stderr is not None and sys.stdout is not None
 
 
+# True when started without a console (windowed exe, pythonw): errors then
+# need a dialog, because nobody would see them on stderr.
+_WINDOWED = not _has_console()
+
+
 def _setup_windowed_logging():
     """A windowed (no console) build has no stderr; log to a file instead."""
-    if _has_console():
+    if not _WINDOWED:
         return
     from .viewer.parameters import config_dir
+    keep = 5      # sagatvnc.log (newest), sagatvnc.1.log ... sagatvnc.4.log
     try:
-        os.makedirs(config_dir(), exist_ok=True)
-        f = open(os.path.join(config_dir(), "sagatvnc.log"), "w",
+        d = config_dir()
+        os.makedirs(d, exist_ok=True)
+        names = ["sagatvnc.log"] + ["sagatvnc.%d.log" % i
+                                    for i in range(1, keep)]
+        for older, newer in reversed(list(zip(names[1:], names[:-1]))):
+            src = os.path.join(d, newer)
+            if os.path.exists(src):
+                os.replace(src, os.path.join(d, older))
+        f = open(os.path.join(d, names[0]), "w",
                  encoding="utf-8", buffering=1)
     except OSError:
         f = open(os.devnull, "w")
@@ -36,7 +49,7 @@ def _setup_windowed_logging():
 
 def _show_error(title, message):
     print(message, file=sys.stderr)
-    if getattr(sys, "frozen", False) or not os.isatty(2):
+    if _WINDOWED:
         try:
             import tkinter as tk
             from tkinter import messagebox
@@ -74,7 +87,15 @@ def main(argv=None):
         opts.config_file = os.path.abspath(path)
 
     from .viewer.app import main as run_viewer
-    return run_viewer(opts)
+    try:
+        return run_viewer(opts)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        _show_error("SagatVNC Viewer",
+                    "An unexpected error occurred:\n\n%s: %s\n\nDetails "
+                    "were written to the log." % (type(e).__name__, e))
+        return 1
 
 
 if __name__ == "__main__":

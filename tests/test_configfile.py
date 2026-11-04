@@ -48,7 +48,8 @@ class ConfigFileTest(unittest.TestCase):
         self.assertEqual(opts.compresslevel, 6)
         self.assertTrue(opts.customcompresslevel)
         self.assertEqual(opts.desktopsize, "\\odd\nvalue")
-        self.assertEqual(len(logs), 3)    # 2 unsupported + 1 bad line
+        self.assertEqual(len(logs), 2)    # FullScreenMode + 1 bad line
+        self.assertEqual(opts.cursortype, "Dot")
 
     def test_file_overrides_command_line(self):
         path = self.write(TIGERVNC_FILE)

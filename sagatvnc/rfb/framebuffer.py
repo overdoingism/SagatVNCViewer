@@ -25,11 +25,21 @@ class FrameBuffer:
         self.resize(width, height)
 
     def resize(self, width, height):
+        """CConnection::setFramebuffer(): keep what still fits, black out
+        the new area (bytearray() starts black)."""
         with self.lock:
+            old = getattr(self, "data", None)
+            old_w, old_h = getattr(self, "width", 0), getattr(self, "height", 0)
+            data = bytearray(width * 3 * height)
+            if old:
+                rowlen = min(width, old_w) * 3
+                for y in range(min(height, old_h)):
+                    data[y * width * 3:y * width * 3 + rowlen] = \
+                        old[y * old_w * 3:y * old_w * 3 + rowlen]
             self.width = width
             self.height = height
             self.stride = width * 3
-            self.data = bytearray(self.stride * height)
+            self.data = data
 
     def _clip(self, x, y, w, h):
         if x < 0 or y < 0 or w < 0 or h < 0 or \

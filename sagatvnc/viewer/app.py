@@ -22,14 +22,27 @@ from tkinter import messagebox
 
 from .. import __version__
 from ..rfb import encodings as enc
-from ..rfb.connection import Connection, ConnectionOptions
+from ..rfb.connection import (Connection, ConnectionOptions,
+                              DroppedBeforeSession)
 from ..rfb.des import deobfuscate_password
 from ..rfb.security import AuthFailure, connect_socket, parse_security_types
+from ..rfb.stream import ConnectionClosed
 from . import dialogs
-from .keysyms import NAMED, event_to_keysym
+from . import keyboard as kbd
+from .keysyms import NAMED
 from .parameters import config_dir, parse_server
+from .cursor import CursorManager
+from .scaler import Scaler, fit_size
+from .win32 import set_local_ime
 
 POLL_MS = 10
+
+# Viewport.cxx: fake key codes for menu keys and lock key sync
+FAKE_CTRL_KEY_CODE = 0x10001
+FAKE_ALT_KEY_CODE = 0x10002
+FAKE_DEL_KEY_CODE = 0x10003
+FAKE_MENU_KEY_CODE = 0x10004
+FAKE_KEY_CODE = 0xFFFF
 MAX_RECTS_PER_PAINT = 32
 HISTORY_FILE = "history"
 
@@ -106,8 +119,23 @@ class ConnectionHandler:
     def server_cut_text(self, text):
         self.events.put(("cuttext", text))
 
+    def clipboard_announce(self, available):
+        self.events.put(("clipannounce", available))
+
     def name_changed(self, name):
         self.events.put(("name", name))
+
+    def set_cursor(self, w, h, hot_x, hot_y, rgba):
+        self.events.put(("cursor", w, h, hot_x, hot_y, rgba))
+
+    def set_cursor_pos(self, x, y):
+        self.events.put(("cursorpos", x, y))
+
+    def set_led_state(self, state):
+        self.events.put(("led", state))
+
+    def set_desktop_size_done(self, result):
+        self.events.put(("resizedone", result))
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +156,14 @@ class ViewerApp:
         self.port = 0
         self.exit_code = 0
         self.fullscreen = False
-        self.down_keys = {}
+        self.keyboard = kbd.Keyboard(self._key_pressed, self._key_released,
+                                     self.root.after, self.root.after_cancel)
+        self.fake_lock_events = {}
+        self.first_led_state = True
+        self.pending_remote_resize = False
+        self.last_remote_resize = 0.0
+        self.resize_checked = False
+        self.saved_credentials = None
         self.button_mask = 0
         self.pending_pointer = None
         self.last_pointer_time = 0.0
@@ -143,6 +178,33 @@ class ViewerApp:
         self.menu = None
         self.offset = (0, 0)
         self.last_pointer_pos = (0, 0)
+        self.scaler = Scaler()
+        self.display_geometry = (0, 0, 0, 0)
+        self.layout_job = None
+        scaling = options.scaling.strip().lower()
+        if scaling not in ("auto", "off"):
+            log("Unknown Scaling %r, using Auto" % options.scaling)
+            scaling = "auto"
+        if scaling == "auto" and not Scaler.available:
+            log("Pillow is not installed: scaling to the window is off "
+                "(pip install pillow)")
+        self.scaling_var = tk.BooleanVar(value=scaling == "auto")
+        dpi = options.remotedpiscale
+        if not 50 <= dpi <= 500:
+            log("RemoteDpiScale %d out of range, using 100" % dpi)
+            dpi = 100
+        self.remote_dpi_var = tk.IntVar(value=dpi)
+        self.calibrating = None        # previous compensation while active
+        self.cursors = None
+        self.has_focus = False
+        self.swallow_release = False
+        self.local_ime_var = tk.BooleanVar(
+            value=bool(options.localinputmethod))
+        self.autoselect_var = tk.BooleanVar(value=bool(options.autoselect))
+        # 3 = full colour, 2/1/0 = LowColorLevel
+        self.colour_var = tk.IntVar(
+            value=3 if options.fullcolor else options.lowcolorlevel)
+        self.quality_var = tk.IntVar(value=options.qualitylevel)
 
     # -- history ------------------------------------------------------------
     def _history_path(self):
@@ -166,6 +228,12 @@ class ViewerApp:
 
     # -- start up -----------------------------------------------------------
     def run(self):
+        try:
+            # Validate options before touching the network
+            self.conn_options = self.connection_options()
+        except ValueError as e:
+            self.fatal("Invalid settings:\n\n%s" % e, reconnect=False)
+            return 1
         try:
             if self.opts.listen:
                 sock = self._listen()
@@ -209,25 +277,42 @@ class ViewerApp:
         o = self.opts
         co = ConnectionOptions()
         co.shared = bool(o.shared)
-        co.security_types = parse_security_types(o.securitytypes)
+        co.security_types = parse_security_types(o.securitytypes, log)
         co.x509_ca = o.x509ca
         co.known_hosts = os.path.join(config_dir(), "x509_known_hosts")
         co.auto_select = bool(o.autoselect)
-        pe = o.preferredencoding
-        for name, value in enc.NAMES.items():
-            if name.lower() == pe.lower():
-                co.preferred_encoding = value
-                break
+        pe = o.preferredencoding.strip()
+        # Only the values upstream's PreferredEncoding enum accepts
+        names = {k.lower(): enc.NAMES[k] for k in enc.PREFERRED_NAMES}
+        unsupported = {k.lower() for k in enc.UNSUPPORTED_NAMES}
+        if pe.lower() in names:
+            co.preferred_encoding = names[pe.lower()]
+        elif pe.lower() in unsupported:
+            log("PreferredEncoding %s is not supported by SagatVNC, using "
+                "Tight instead" % pe)
+            co.preferred_encoding = enc.TIGHT
         else:
             raise ValueError("Unknown encoding %r" % pe)
         co.custom_compress_level = bool(o.customcompresslevel)
         co.compress_level = o.compresslevel
+        co.full_colour = bool(o.fullcolor)
+        if not 0 <= o.lowcolorlevel <= 2:
+            raise ValueError("LowColorLevel must be 0, 1 or 2")
+        co.low_colour_level = o.lowcolorlevel
+        if not 0 <= o.qualitylevel <= 9:
+            raise ValueError("QualityLevel must be between 0 and 9")
+        co.quality_level = o.qualitylevel
+        co.no_jpeg = bool(o.nojpeg)
+        co.max_cut_text = max(0, o.maxcuttext)
+        from ..rfb.decoders import JPEG_AVAILABLE
+        if not JPEG_AVAILABLE and not co.no_jpeg:
+            log("Pillow is not installed: JPEG is disabled")
         return co
 
     def start_connection(self, sock):
         self.handler = ConnectionHandler(self)
         self.conn = Connection(sock, self.host, self.handler,
-                               self.connection_options())
+                               self.conn_options)
         self.thread = threading.Thread(target=self._network_thread,
                                        name="rfb", daemon=True)
         self.thread.start()
@@ -240,9 +325,20 @@ class ViewerApp:
         except Cancelled:
             self.handler.events.put(("closed", "cancelled"))
         except AuthFailure as e:
-            self.handler.events.put(("error", "Authentication failed: %s" %
-                                     e))
+            self.saved_credentials = None
+            self.handler.events.put(("error", "Failed to authenticate with "
+                                     "the server. Reason given by the "
+                                     "server:\n\n%s" % e))
+        except DroppedBeforeSession as e:
+            self.handler.events.put(("error", str(e)))
+        except ConnectionClosed:
+            # CConn: end of stream once the session runs -> disconnect()
+            # quietly, as TigerVNC does
+            log(self.conn.session_summary())
+            self.handler.events.put(("closed", None))
         except Exception as e:     # report anything else to the user
+            if not self.conn.closed:
+                log(self.conn.session_summary())
             if self.conn.closed:
                 self.handler.events.put(("closed", None))
             else:
@@ -251,19 +347,36 @@ class ViewerApp:
 
     # -- callbacks run on the GUI thread --------------------------------------
     def ask_credentials(self, need_username):
+        """CConn::getUserPasswd(): environment, saved, password file,
+        then the dialog."""
+        env_user = os.environ.get("VNC_USERNAME")
+        env_pass = os.environ.get("VNC_PASSWORD")
+        if need_username and env_user and env_pass:
+            return env_user, env_pass
+        if not need_username and env_pass:
+            return "", env_pass
+        saved = self.saved_credentials
+        if saved and (saved[0] or not need_username):
+            return saved
         if not need_username and self.opts.passwordfile:
             try:
                 with open(os.path.expanduser(self.opts.passwordfile),
                           "rb") as f:
                     return "", deobfuscate_password(f.read(8))
             except OSError as e:
-                log("Failed to read password file: %s" % e)
+                raise OSError("Failed to open \"%s\": %s" %
+                              (self.opts.passwordfile, e.strerror or e))
         secure = bool(self.conn.security and self.conn.security.secure)
         res = dialogs.AuthDialog(self.root, need_username, secure,
-                                 self.host).run()
+                                 self.host,
+                                 offer_keep=bool(self.opts.reconnectonerror)
+                                 ).run()
         if res is None:
             raise Cancelled()
-        return res
+        user, password, keep = res
+        if keep:
+            self.saved_credentials = (user, password)
+        return user, password
 
     def ask_certificate(self, info):
         if info["changed"]:
@@ -297,8 +410,19 @@ class ViewerApp:
                     self.root.bell()
                 elif kind == "cuttext":
                     self.server_cut_text(ev[1])
+                elif kind == "clipannounce":
+                    self.clipboard_announce(ev[1])
                 elif kind == "name":
                     self.set_title(ev[1])
+                elif kind == "cursor":
+                    if self.cursors:
+                        self.cursors.set_shape(*ev[1:])
+                elif kind == "cursorpos":
+                    self.set_cursor_pos(*ev[1:])
+                elif kind == "led":
+                    self.set_led_state(ev[1])
+                elif kind == "resizedone":
+                    self.set_desktop_size_done(ev[1])
                 elif kind == "error":
                     self.fatal(ev[1])
                     return
@@ -339,6 +463,9 @@ class ViewerApp:
             return
         self.exit_code = 0
         self.desktop_size_sent = False
+        self.resize_checked = False
+        self.pending_remote_resize = False
+        self.first_led_state = True
         self.start_connection(sock)
 
     def quit(self):
@@ -355,12 +482,23 @@ class ViewerApp:
 
     def create_desktop(self, width, height, name):
         self.set_title(name)
+        # Like TigerVNC, only send the clipboard when it changes after the
+        # connection is made, never whatever happened to be in it before.
+        # Some servers (winvnc on the secure login desktop) can't take
+        # clipboard data and may drop the connection.
+        try:
+            self.last_clipboard = self.root.clipboard_get()
+        except tk.TclError:
+            self.last_clipboard = None
         if self.canvas is None:
             root = self.root
             root.configure(background="black")
             self.canvas = tk.Canvas(root, highlightthickness=0, borderwidth=0,
-                                    background="black", cursor="dot",
-                                    takefocus=True)
+                                    background="black", takefocus=True)
+            self.cursors = CursorManager(self.canvas,
+                                         bool(self.opts.alwayscursor),
+                                         self.opts.cursortype,
+                                         bool(self.opts.remotecursorshape))
             self.hbar = tk.Scrollbar(root, orient="horizontal",
                                      command=self.canvas.xview)
             self.vbar = tk.Scrollbar(root, orient="vertical",
@@ -385,44 +523,98 @@ class ViewerApp:
                 self.root.attributes("-zoomed", True)
         if self.opts.fullscreen:
             self.set_fullscreen(True)
+        # The outer Win32 window only exists once Tk has mapped it
+        self.root.after(100, self.apply_local_ime)
         self.canvas.focus_set()
 
+    def apply_local_ime(self):
+        on = self.local_ime_var.get()
+        if set_local_ime(self.root, on):
+            log("Local input method %s" % ("enabled" if on else "disabled"))
+
+    def scaling_active(self):
+        return self.scaling_var.get() and Scaler.available
+
+    def _window_maximized(self):
+        try:
+            return self.root.state() == "zoomed"
+        except tk.TclError:
+            return False
+
     def resize_framebuffer(self, width, height, initial=False):
-        self.image.configure(width=width, height=height)
-        self.canvas.configure(scrollregion=(0, 0, width, height))
+        if not initial:
+            # Only follow the new size if the window currently fits the
+            # desktop exactly (and isn't maximized, full screen or waiting
+            # on our own resize request), like DesktopWindow
+            _, _, dw, dh = self.display_geometry
+            fits = (self.canvas.winfo_width(), self.canvas.winfo_height()) \
+                == (dw, dh) and self.scaler.identity
+            if self.fullscreen or self._window_maximized() or \
+                    self.pending_remote_resize or self.resize_job or \
+                    not fits:
+                self.root.update_idletasks()
+                self.layout(force=True)
+                return
         if not self.fullscreen and not self.opts.maximize:
             if initial and self.opts.geometry:
                 self.root.geometry(self.opts.geometry)
             else:
-                sw = self.root.winfo_screenwidth()
-                sh = self.root.winfo_screenheight()
-                self.root.geometry("%dx%d" % (min(width, sw - 40),
-                                              min(height, sh - 80)))
-        with self.handler.damage_lock:
-            self.handler.damage = [(0, 0, width, height)]
-        self.update_scrollbars()
+                # Fit the work area; with scaling keep the aspect ratio so
+                # a desktop larger than the screen shows whole, not cropped.
+                sw = self.root.winfo_screenwidth() - 40
+                sh = self.root.winfo_screenheight() - 80
+                if self.scaling_active() and (width > sw or height > sh):
+                    w, h = fit_size(width, height, sw, sh)
+                else:
+                    w, h = min(width, sw), min(height, sh)
+                self.root.geometry("%dx%d" % (w, h))
+        self.root.update_idletasks()
+        self.layout(force=True)
 
-    def update_scrollbars(self):
+    def layout(self, force=False):
+        """Size and place the desktop image for the current window size."""
         if not self.canvas or not self.conn or not self.conn.fb:
             return
         fbw, fbh = self.conn.fb.width, self.conn.fb.height
-        cw = self.root.winfo_width()
-        ch = self.root.winfo_height()
-        need_h = cw < fbw and not self.fullscreen
-        need_v = ch < fbh and not self.fullscreen
-        if need_h:
-            self.hbar.grid(row=1, column=0, sticky="we")
-        else:
+        if self.scaling_active():
             self.hbar.grid_remove()
-        if need_v:
-            self.vbar.grid(row=0, column=1, sticky="ns")
-        else:
             self.vbar.grid_remove()
-        # Centre the desktop when the window is larger than it
-        ox = max(0, (self.canvas.winfo_width() - fbw) // 2)
-        oy = max(0, (self.canvas.winfo_height() - fbh) // 2)
+            self.root.update_idletasks()
+            cw = max(1, self.canvas.winfo_width())
+            ch = max(1, self.canvas.winfo_height())
+            dw, dh = fit_size(fbw, fbh, cw, ch)
+            self.canvas.configure(scrollregion=(0, 0, cw, ch))
+            self.canvas.xview_moveto(0)
+            self.canvas.yview_moveto(0)
+        else:
+            cw = self.root.winfo_width()
+            ch = self.root.winfo_height()
+            if cw < fbw and not self.fullscreen:
+                self.hbar.grid(row=1, column=0, sticky="we")
+            else:
+                self.hbar.grid_remove()
+            if ch < fbh and not self.fullscreen:
+                self.vbar.grid(row=0, column=1, sticky="ns")
+            else:
+                self.vbar.grid_remove()
+            dw, dh = fbw, fbh
+            self.canvas.configure(scrollregion=(0, 0, fbw, fbh))
+            self.root.update_idletasks()
+            cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
+        # Centre the desktop (black bars where the aspect ratio differs)
+        ox = max(0, (cw - dw) // 2)
+        oy = max(0, (ch - dh) // 2)
         self.canvas.coords(self.image_item, ox, oy)
         self.offset = (ox, oy)
+        new = (fbw, fbh, dw, dh)
+        if force or new != self.display_geometry:
+            self.display_geometry = new
+            self.scaler.configure(fbw, fbh, dw, dh)
+            self.image.configure(width=dw, height=dh)
+            if self.cursors:
+                self.cursors.set_scale((self.scaler.sx + self.scaler.sy) / 2)
+            with self.handler.damage_lock:
+                self.handler.damage = [(0, 0, fbw, fbh)]
 
     def paint(self):
         if self.image is None or self.handler is None:
@@ -432,65 +624,99 @@ class ViewerApp:
         if fb is None or not fb.lock.acquire(blocking=False):
             return
         try:
+            if self.display_geometry[:2] != (fb.width, fb.height):
+                return          # resize pending; layout() will repaint
             rects = self.handler.take_damage()
             if not rects:
                 return
-            if len(rects) > MAX_RECTS_PER_PAINT:
-                x0 = min(r[0] for r in rects)
-                y0 = min(r[1] for r in rects)
-                x1 = max(r[0] + r[2] for r in rects)
-                y1 = max(r[1] + r[3] for r in rects)
-                rects = [(x0, y0, x1 - x0, y1 - y0)]
+            sc = self.scaler
+            out = []
             for x, y, w, h in rects:
-                x = max(0, x)
-                y = max(0, y)
-                w = min(w, fb.width - x)
-                h = min(h, fb.height - y)
+                x, y = max(0, x), max(0, y)
+                w, h = min(w, fb.width - x), min(h, fb.height - y)
+                if w > 0 and h > 0:
+                    out.append(sc.dest_rect(x, y, w, h))
+            if len(out) > MAX_RECTS_PER_PAINT:
+                x0 = min(r[0] for r in out)
+                y0 = min(r[1] for r in out)
+                x1 = max(r[0] + r[2] for r in out)
+                y1 = max(r[1] + r[3] for r in out)
+                out = [(x0, y0, x1 - x0, y1 - y0)]
+            for x, y, w, h in out:
                 if w <= 0 or h <= 0:
                     continue
-                ppm = b"P6 %d %d 255\n" % (w, h) + fb.get_rect(x, y, w, h)
+                ppm = b"P6 %d %d 255\n" % (w, h) + sc.render(fb, x, y, w, h)
                 self.root.tk.call(self.image.name, "put", ppm,
                                   "-format", "ppm", "-to", x, y)
         finally:
             fb.lock.release()
 
-    # -- remote resize ----------------------------------------------------------
+    # -- remote resize (DesktopWindow::remoteResize) ---------------------------
     def on_configure(self, event):
         if event.widget is not self.root:
             return
-        self.update_scrollbars()
-        if not self.opts.remoteresize:
-            return
+        # Rescaling a full frame costs tens of ms: coalesce resize events
+        if self.layout_job:
+            self.root.after_cancel(self.layout_job)
+        self.layout_job = self.root.after(40, self._do_layout)
+        self.remote_resize()
+
+    def _do_layout(self):
+        self.layout_job = None
+        self.layout()
+
+    def remote_resize(self):
+        """Ask the server for our window size: one request in flight at a
+        time and no more than one per 100 ms, as DesktopWindow does."""
         if self.resize_job:
             self.root.after_cancel(self.resize_job)
-        self.resize_job = self.root.after(500, self.send_remote_resize)
-
-    def send_remote_resize(self):
-        self.resize_job = None
+            self.resize_job = None
         conn = self.conn
+        if self.view_only() or not self.opts.remoteresize:
+            return
         if not conn or not conn.fb or not conn.supports_set_desktop_size:
             return
-        if self.opts.desktopsize and not self.desktop_size_sent:
+        if self.pending_remote_resize:
+            return
+        since = (time.monotonic() - self.last_remote_resize) * 1000
+        if since < 100:
+            self.resize_job = self.root.after(int(100 - since) + 1,
+                                              self.remote_resize)
             return
         w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
+        if not self.desktop_size_sent and self.opts.desktopsize:
+            # An explicit size has been requested
+            self.desktop_size_sent = True
+            try:
+                w, h = (int(v) for v in
+                        self.opts.desktopsize.lower().split("x"))
+            except ValueError:
+                log("Invalid DesktopSize %r" % self.opts.desktopsize)
+                return
         if w < 16 or h < 16 or (w, h) == (conn.fb.width, conn.fb.height):
             return
         log("Requesting remote desktop size %dx%d" % (w, h))
-        conn.set_desktop_size(w, h)
+        self.pending_remote_resize = True
+        self.last_remote_resize = time.monotonic()
+        try:
+            conn.set_desktop_size(w, h)
+        except OSError:
+            pass
+
+    def set_desktop_size_done(self, result):
+        """DesktopWindow::setDesktopSizeDone()"""
+        self.pending_remote_resize = False
+        if result != 0:
+            log("SetDesktopSize failed: %d" % result)
+            return
+        self.remote_resize()      # the window may have changed meanwhile
 
     def check_initial_desktop_size(self):
-        if self.desktop_size_sent or not self.opts.desktopsize:
-            return
-        if not self.conn or not self.conn.supports_set_desktop_size:
-            return
-        try:
-            w, h = (int(v) for v in self.opts.desktopsize.lower().split("x"))
-        except ValueError:
-            log("Invalid DesktopSize %r" % self.opts.desktopsize)
-            self.desktop_size_sent = True
-            return
-        self.desktop_size_sent = True
-        self.conn.set_desktop_size(w, h)
+        # The first ExtendedDesktopSize tells us the server can resize
+        if self.conn and self.conn.supports_set_desktop_size and \
+                not self.resize_checked:
+            self.resize_checked = True
+            self.remote_resize()
 
     # -- input ----------------------------------------------------------------
     def bind_input(self):
@@ -503,6 +729,7 @@ class ViewerApp:
             c.bind("<ButtonPress-%d>" % i, self.on_button)
             c.bind("<ButtonRelease-%d>" % i, self.on_button)
         c.bind("<Motion>", self.on_motion)
+        c.bind("<Leave>", self.on_leave)
         c.bind("<MouseWheel>", self.on_wheel)
         c.bind("<Shift-MouseWheel>", self.on_wheel)
         for i in (4, 5):   # X11 wheel
@@ -516,54 +743,120 @@ class ViewerApp:
     def view_only(self):
         return self.viewonly_var.get()
 
+    def _swallow_fake_lock_key(self, event):
+        """Lock keys we toggled ourselves for LED sync come back as Tk
+        events; KeyboardWin32 drops them by their fake scan code."""
+        n = self.fake_lock_events.get(event.keysym, 0)
+        if n:
+            self.fake_lock_events[event.keysym] = n - 1
+            return True
+        return False
+
     def on_key_press(self, event):
+        if self.calibrating is not None and event.keysym == "Escape":
+            self.cancel_calibration()
+            return "break"
+        if self._swallow_fake_lock_key(event):
+            return "break"
         menukey = self.opts.menukey
         if menukey and event.keysym == menukey:
+            self.keyboard.resolve_altgr(False)
             self.show_menu(event)
             return "break"
         if self.view_only() or not self.conn:
             return "break"
-        ks = event_to_keysym(event.keysym, event.keysym_num, event.char)
-        if ks is None:
-            return "break"
-        key = event.keycode if ks < 0xFE00 else ("ks", ks)
-        old = self.down_keys.get(key)
-        if old is not None and old != ks:
-            self._send_key(old, False)
-        self.down_keys[key] = ks
-        self._send_key(ks, True)
+        self.keyboard.key_press(event)
         return "break"
 
     def on_key_release(self, event):
+        if self._swallow_fake_lock_key(event):
+            return "break"
         if self.view_only() or not self.conn:
             return "break"
-        ks = event_to_keysym(event.keysym, event.keysym_num, event.char)
-        key = ("ks", ks) if ks is not None and ks >= 0xFE00 else \
-            event.keycode
-        down = self.down_keys.pop(key, None)
-        if down is None and ks is not None:
-            down = ks
-        if down is not None:
-            self._send_key(down, False)
+        # A release without a press (e.g. the menu key) is ignored by
+        # Connection.send_key_release, as in CConnection::sendKeyRelease
+        self.keyboard.key_release(event)
         return "break"
 
-    def _send_key(self, keysym, down):
+    def _key_pressed(self, system_key_code, key_code, keysym):
         try:
-            self.conn.key_event(keysym, down)
+            self.conn.send_key_press(system_key_code, key_code, keysym)
+        except OSError:
+            pass
+
+    def _key_released(self, system_key_code):
+        try:
+            self.conn.send_key_release(system_key_code)
         except OSError:
             pass
 
     def release_all_keys(self):
-        for ks in list(self.down_keys.values()):
-            self._send_key(ks, False)
-        self.down_keys.clear()
+        """Viewport::resetKeyboard()"""
+        if self.conn:
+            try:
+                self.conn.release_all_keys()
+            except OSError:
+                pass
+        self.keyboard.reset()
 
     def on_focus_out(self, event):
-        if self.conn and not self.view_only():
-            self.release_all_keys()
+        self.has_focus = False
+        # We won't get more key events, so reset our knowledge about keys
+        self.release_all_keys()
 
     def on_focus_in(self, event):
-        if not self.opts.sendclipboard or not self.conn or self.view_only():
+        """Viewport FL_FOCUS"""
+        self.has_focus = True
+        if sys.platform == "win32" and not self.local_ime_var.get():
+            set_local_ime(self.root, False)    # cheap; survives remaps
+        if not self.conn:
+            return
+        self.flush_pending_clipboard()
+        # Lock keys may have got out of sync while we didn't have focus
+        self.push_led_state()
+        # Resend the menu's Ctrl/Alt if they are still on
+        if not self.view_only():
+            if self.ctrl_var.get():
+                self._key_pressed(FAKE_CTRL_KEY_CODE, 0x1D, NAMED["Control_L"])
+            if self.alt_var.get():
+                self._key_pressed(FAKE_ALT_KEY_CODE, 0x38, NAMED["Alt_L"])
+
+    # -- lock key LEDs (Viewport::setLEDState / pushLEDState) -----------------
+    def set_led_state(self, state):
+        if self.first_led_state:
+            # The first message only announces support; push our state
+            self.first_led_state = False
+            if self.has_focus:
+                self.push_led_state()
+            return
+        if self.view_only() or not self.has_focus:
+            return
+        for name in kbd.set_led_state(state):
+            self.fake_lock_events[name] = \
+                self.fake_lock_events.get(name, 0) + 2    # press + release
+
+    def push_led_state(self):
+        if self.view_only() or not self.conn or \
+                self.conn.server_led_state == enc.LED_UNKNOWN:
+            return
+        local = kbd.get_led_state()
+        if local == enc.LED_UNKNOWN:
+            return
+        server = self.conn.server_led_state
+        for bit, key_code, keysym in (
+                (enc.LED_CAPS_LOCK, 0x3A, 0xFFE5),
+                (enc.LED_NUM_LOCK, 0x45, 0xFF7F),
+                (enc.LED_SCROLL_LOCK, 0x46, 0xFF14)):
+            if (local & bit) != (server & bit):
+                log("Inserting fake lock key to get in sync with server")
+                self._key_pressed(FAKE_KEY_CODE, key_code, keysym)
+                self._key_released(FAKE_KEY_CODE)
+
+    # -- clipboard ----------------------------------------------------------------
+    def flush_pending_clipboard(self):
+        """Viewport::flushPendingClipboard(): tell the server about a local
+        clipboard change made while we didn't have focus."""
+        if not self.opts.sendclipboard or self.view_only():
             return
         try:
             text = self.root.clipboard_get()
@@ -572,22 +865,47 @@ class ViewerApp:
         if text and text != self.last_clipboard:
             self.last_clipboard = text
             try:
-                self.conn.client_cut_text(text)
+                self.conn.announce_clipboard(text)
             except OSError:
                 pass
 
+    def clipboard_announce(self, available):
+        """TigerVNC Viewport::handleClipboardAnnounce().
+
+        Only fetch the server's clipboard while the viewer has focus.  This
+        matters: a fetch makes the server read its clipboard, and while
+        another program (e.g. AnyDesk) is writing it, TigerVNC 1.16.2's
+        server can fail there and drop the connection.
+        """
+        if self.view_only() or not self.opts.acceptclipboard or \
+                not self.conn:
+            return
+        if not available:
+            log("Clipboard is no longer available on server")
+            return
+        if not self.has_focus:
+            log("Got notification of new clipboard on server whilst not "
+                "focused, ignoring")
+            return
+        try:
+            self.conn.request_clipboard()
+        except OSError:
+            pass
+
     def server_cut_text(self, text):
-        if not self.opts.acceptclipboard:
+        """TigerVNC Viewport::handleClipboardData()."""
+        if not self.opts.acceptclipboard or not self.has_focus:
             return
         self.last_clipboard = text
         self.root.clipboard_clear()
         self.root.clipboard_append(text)
 
+    # -- pointer --------------------------------------------------------------------
     def _fb_coords(self, event):
         ox, oy = self.offset
-        x = int(self.canvas.canvasx(event.x)) - ox
-        y = int(self.canvas.canvasy(event.y)) - oy
-        return x, y
+        x = self.canvas.canvasx(event.x) - ox
+        y = self.canvas.canvasy(event.y) - oy
+        return self.scaler.to_source(x, y)
 
     def _button_bit(self, num):
         # Tk on macOS numbers the right button 2 and the middle button 3
@@ -596,9 +914,18 @@ class ViewerApp:
         return 1 << (num - 1)
 
     def on_button(self, event):
+        self.keyboard.mouse_event()
         if self.view_only() or not self.conn:
             return
         self.canvas.focus_set()
+        if self.calibrating is not None and \
+                event.type == tk.EventType.ButtonPress:
+            self.finish_calibration(*self._fb_coords(event))
+            self.swallow_release = True
+            return
+        if self.swallow_release and event.type != tk.EventType.ButtonPress:
+            self.swallow_release = False
+            return
         bit = self._button_bit(event.num)
         if event.type == tk.EventType.ButtonPress:
             self.button_mask |= bit
@@ -608,6 +935,7 @@ class ViewerApp:
         self._send_pointer(*self._fb_coords(event))
 
     def on_motion(self, event):
+        self.keyboard.mouse_event()
         if self.view_only() or not self.conn:
             return
         x, y = self._fb_coords(event)
@@ -622,6 +950,15 @@ class ViewerApp:
                             1000) + 1
                 self.pointer_job = self.root.after(delay, self._flush_pointer)
 
+    def on_leave(self, event):
+        """Viewport FL_LEAVE: a last move event to help trigger edge
+        stuff.  (FLTK sends no FL_LEAVE during a drag; Tk can, so only do
+        it with no buttons held.)"""
+        if self.view_only() or not self.conn or self.button_mask:
+            return
+        self._flush_pointer()
+        self._send_pointer(*self._fb_coords(event))
+
     def _flush_pointer(self):
         if self.pointer_job:
             self.root.after_cancel(self.pointer_job)
@@ -631,9 +968,22 @@ class ViewerApp:
             self.pending_pointer = None
             self._send_pointer(x, y)
 
+    def remote_pointer_pos(self, x, y):
+        """Framebuffer position -> position to put on the wire.
+
+        A server that is not DPI aware (TigerVNC's winvnc, for one)
+        may inject the pointer using Windows' scaled-down logical screen
+        size. Dividing by the remote scale cancels that out.
+        """
+        scale = self.remote_dpi_var.get()
+        if scale == 100:
+            return x, y
+        return int(x * 100 / scale), int(y * 100 / scale)
+
     def _send_pointer(self, x, y, mask=None):
         self.last_pointer_time = time.monotonic()
         self.last_pointer_pos = (x, y)
+        x, y = self.remote_pointer_pos(x, y)
         try:
             self.conn.pointer_event(x, y, self.button_mask if mask is None
                                     else mask)
@@ -641,30 +991,55 @@ class ViewerApp:
             pass
 
     def _wheel_click(self, event, button):
+        """Viewport FL_MOUSEWHEEL: a quick press of the wheel "button",
+        followed by an immediate release - one per wheel event."""
         x, y = self._fb_coords(event)
         bit = 1 << (button - 1)
         self._flush_pointer()
         self._send_pointer(x, y, self.button_mask | bit)
         self._send_pointer(x, y, self.button_mask)
 
+    def _shift_held(self):
+        if sys.platform == "win32":
+            import ctypes
+            return bool(ctypes.windll.user32.GetKeyState(0x10) & 0x8000)
+        return False
+
     def on_wheel(self, event):
-        if self.view_only() or not self.conn:
+        self.keyboard.mouse_event()
+        if self.view_only() or not self.conn or not event.delta:
             return
-        horizontal = bool(event.state & 0x1)
-        up = event.delta > 0
-        steps = max(1, abs(event.delta) // 120) if sys.platform == "win32" \
-            else 1
-        button = (6 if up else 7) if horizontal else (4 if up else 5)
-        for _ in range(steps):
-            self._wheel_click(event, button)
+        # Tk on Windows reports a horizontal wheel (WM_MOUSEHWHEEL) as
+        # Shift+wheel.  A Shift that is really held is just Shift + the
+        # vertical wheel, which the server sees as such.
+        horizontal = bool(event.state & 0x1) and not self._shift_held()
+        if horizontal:
+            self._wheel_click(event, 6 if event.delta > 0 else 7)
+        else:
+            self._wheel_click(event, 4 if event.delta > 0 else 5)
 
     def on_x11_wheel(self, event):
+        self.keyboard.mouse_event()
         if self.view_only() or not self.conn:
             return
-        if event.state & 0x1:
-            self._wheel_click(event, 6 if event.num == 4 else 7)
-        else:
-            self._wheel_click(event, event.num)
+        self._wheel_click(event, event.num)
+
+    def set_cursor_pos(self, x, y):
+        """Viewport::setCursorPos(): the server moved the pointer; warp
+        ours if we have focus and the pointer is over the desktop."""
+        if not self.has_focus or not self.canvas:
+            return
+        scale = self.remote_dpi_var.get() / 100.0
+        fx, fy = x * scale, y * scale
+        ox, oy = self.offset
+        cx = int(fx * self.scaler.sx) + ox - int(self.canvas.canvasx(0))
+        cy = int(fy * self.scaler.sy) + oy - int(self.canvas.canvasy(0))
+        px = self.root.winfo_pointerx() - self.canvas.winfo_rootx()
+        py = self.root.winfo_pointery() - self.canvas.winfo_rooty()
+        if not (0 <= px < self.canvas.winfo_width() and
+                0 <= py < self.canvas.winfo_height()):
+            return
+        self.canvas.event_generate("<Motion>", warp=True, x=cx, y=cy)
 
     # -- F8 menu ---------------------------------------------------------------
     def build_menu(self):
@@ -676,13 +1051,48 @@ class ViewerApp:
                               self.fullscreen_var.get()))
         m.add_command(label="Resize window to session",
                       command=self.resize_to_session)
+        m.add_checkbutton(label="Scale to window", variable=self.scaling_var,
+                          command=self._scaling_changed,
+                          state="normal" if Scaler.available else "disabled")
+        dpi_menu = tk.Menu(m, tearoff=False)
+        for pct in (100, 125, 150, 175, 200, 225, 250, 300):
+            dpi_menu.add_radiobutton(
+                label="%d%%%s" % (pct, " (off)" if pct == 100 else ""),
+                value=pct, variable=self.remote_dpi_var,
+                command=self._remote_dpi_changed)
+        dpi_menu.add_separator()
+        dpi_menu.add_command(label="Calibrate...",
+                             command=self.start_calibration)
+        m.add_cascade(label="Remote DPI compensation", menu=dpi_menu)
+        m.add_separator()
+        m.add_checkbutton(label="Auto select (color and quality)",
+                          variable=self.autoselect_var,
+                          command=self._picture_changed)
+        colour_menu = tk.Menu(m, tearoff=False)
+        for value, label in ((3, "Full color"), (2, "Medium (256 colors)"),
+                             (1, "Low (64 colors)"), (0, "Very low (8 colors)")):
+            colour_menu.add_radiobutton(label=label, value=value,
+                                        variable=self.colour_var,
+                                        command=self._picture_changed)
+        m.add_cascade(label="Color level", menu=colour_menu)
+        quality_menu = tk.Menu(m, tearoff=False)
+        for q in range(9, -1, -1):
+            quality_menu.add_radiobutton(
+                label="%d%s" % (q, {9: " (best)", 0: " (smallest)"}.get(q, "")),
+                value=q, variable=self.quality_var,
+                command=self._picture_changed)
+        m.add_cascade(label="JPEG quality", menu=quality_menu)
+        self.picture_menus = (colour_menu, quality_menu)
+        m.add_checkbutton(label="Local input method",
+                          variable=self.local_ime_var,
+                          command=self.apply_local_ime,
+                          state="normal" if sys.platform == "win32"
+                          else "disabled")
         m.add_separator()
         m.add_checkbutton(label="Ctrl", variable=self.ctrl_var,
-                          command=lambda: self._toggle_mod(
-                              self.ctrl_var, NAMED["Control_L"]))
+                          command=lambda: self._toggle_mod("ctrl"))
         m.add_checkbutton(label="Alt", variable=self.alt_var,
-                          command=lambda: self._toggle_mod(
-                              self.alt_var, NAMED["Alt_L"]))
+                          command=lambda: self._toggle_mod("alt"))
         if self.opts.menukey:
             m.add_command(label="Send %s" % self.opts.menukey,
                           command=self.send_menu_key)
@@ -708,9 +1118,107 @@ class ViewerApp:
         finally:
             self.menu.grab_release()
 
-    def _toggle_mod(self, var, keysym):
-        if not self.view_only():
-            self._send_key(keysym, var.get())
+    def _toggle_mod(self, which):
+        """ID_CTRL / ID_ALT: fake key codes, so they're released on
+        focus loss and pressed again on focus (see on_focus_in)."""
+        if which == "ctrl":
+            var, code, key_code, ks = (self.ctrl_var, FAKE_CTRL_KEY_CODE,
+                                       0x1D, NAMED["Control_L"])
+        else:
+            var, code, key_code, ks = (self.alt_var, FAKE_ALT_KEY_CODE,
+                                       0x38, NAMED["Alt_L"])
+        if self.view_only():
+            return
+        if var.get():
+            self._key_pressed(code, key_code, ks)
+        else:
+            self._key_released(code)
+
+    def _picture_changed(self):
+        """Apply color level / JPEG quality / AutoSelect from the menu."""
+        auto = self.autoselect_var.get()
+        colour = self.colour_var.get()
+        if self.conn:
+            self.conn.change_settings(
+                auto_select=auto, full_colour=colour == 3,
+                low_colour_level=min(colour, 2),
+                quality_level=self.quality_var.get())
+        log("Picture settings: %s, color %s, JPEG quality %d" %
+            ("auto select" if auto else "manual",
+             "full" if colour == 3 else "level %d" % colour,
+             self.quality_var.get()))
+
+    # -- pointer calibration ---------------------------------------------------
+    def start_calibration(self):
+        """Measure how far a non-DPI-aware server moves the cursor.
+
+        With compensation off, such a server puts the remote cursor at
+        pos * f, so it reaches the remote screen's bottom-right corner when
+        the local pointer is only at (width / f, height / f).  The user
+        moves there and clicks; f follows from where they clicked.
+        """
+        if self.view_only() or not self.conn:
+            return
+        messagebox.showinfo(
+            "Calibrate pointer",
+            "Compensation is switched off while calibrating.\n\n"
+            "Slowly move the mouse until the REMOTE cursor (the arrow drawn "
+            "in the remote desktop) just touches the bottom-right corner of "
+            "the remote screen, then click once.  The click is not sent "
+            "to the server.\n\nPress Esc to cancel.", parent=self.root)
+        self.calibrating = self.remote_dpi_var.get()
+        self.remote_dpi_var.set(100)
+        self.canvas.configure(cursor="crosshair")
+        self.canvas.focus_set()
+        log("Pointer calibration started")
+
+    def cancel_calibration(self):
+        self.remote_dpi_var.set(self.calibrating)
+        self.calibrating = None
+        self.cursors.apply()
+        log("Pointer calibration cancelled")
+
+    def finish_calibration(self, x, y):
+        fb = self.conn.fb
+        self.calibrating = None
+        self.cursors.apply()
+        fx = fb.width / max(1, x + 1)
+        fy = fb.height / max(1, y + 1)
+        log("Calibration click at %d,%d of %dx%d: factors %.3f x %.3f" %
+            (x, y, fb.width, fb.height, fx, fy))
+        if fx < 1.02 and fy < 1.02:
+            self.remote_dpi_var.set(100)
+            messagebox.showinfo(
+                "Calibrate pointer",
+                "The remote cursor reached the corner together with your "
+                "mouse, so no compensation is needed (it is now off).\n\n"
+                "If the remote cursor could NOT reach the corner at all, "
+                "the server moves it too little; that can't be corrected "
+                "from the viewer - run the server DPI aware instead.",
+                parent=self.root)
+            return
+        pct = int(round((fx + fy) / 2 * 100))
+        pct = max(100, min(500, pct))
+        self.remote_dpi_var.set(pct)
+        note = ""
+        if abs(fx - fy) > 0.08:
+            note = ("\n\nNote: horizontal and vertical differ (%.0f%% vs "
+                    "%.0f%%); the average is used." % (fx * 100, fy * 100))
+        messagebox.showinfo(
+            "Calibrate pointer",
+            "Remote DPI compensation is now %d%%.%s\n\nTo keep it, add "
+            "this line to your .tigervnc file:\n\n    RemoteDpiScale=%d" %
+            (pct, note, pct), parent=self.root)
+        self._remote_dpi_changed()
+
+    def _remote_dpi_changed(self):
+        log("Remote DPI compensation: %d%%" % self.remote_dpi_var.get())
+        # Move the remote pointer to the corrected position right away
+        if self.conn and not self.view_only():
+            self._send_pointer(*self.last_pointer_pos)
+
+    def _scaling_changed(self):
+        self.layout(force=True)
 
     def _view_only_changed(self):
         if self.view_only():
@@ -726,20 +1234,25 @@ class ViewerApp:
         if ks is None and len(name) == 1:
             ks = ord(name)
         if ks:
-            self._send_key(ks, True)
-            self._send_key(ks, False)
+            self._key_pressed(FAKE_MENU_KEY_CODE, 0, ks)
+            self._key_released(FAKE_MENU_KEY_CODE)
 
     def send_cad(self):
         if self.view_only():
             return
-        for ks in (NAMED["Control_L"], NAMED["Alt_L"], NAMED["Delete"]):
-            self._send_key(ks, True)
-        for ks in (NAMED["Delete"], NAMED["Alt_L"], NAMED["Control_L"]):
-            self._send_key(ks, False)
+        # ID_CTRLALTDEL; leaves the menu's own Ctrl/Alt alone
+        self._key_pressed(FAKE_CTRL_KEY_CODE, 0x1D, NAMED["Control_L"])
+        self._key_pressed(FAKE_ALT_KEY_CODE, 0x38, NAMED["Alt_L"])
+        self._key_pressed(FAKE_DEL_KEY_CODE, 0xD3, NAMED["Delete"])
+        self._key_released(FAKE_DEL_KEY_CODE)
+        if not self.alt_var.get():
+            self._key_released(FAKE_ALT_KEY_CODE)
+        if not self.ctrl_var.get():
+            self._key_released(FAKE_CTRL_KEY_CODE)
 
     def refresh(self):
         try:
-            self.conn.request_update(incremental=False)
+            self.conn.refresh_framebuffer()
         except OSError:
             pass
 
@@ -747,7 +1260,8 @@ class ViewerApp:
         self.fullscreen = on
         self.fullscreen_var.set(on)
         self.root.attributes("-fullscreen", on)
-        self.update_scrollbars()
+        self.root.update_idletasks()
+        self.layout()
 
     def resize_to_session(self):
         if self.fullscreen:
@@ -761,7 +1275,11 @@ class ViewerApp:
         info = ("Desktop name: %s\n"
                 "Host: %s port: %d\n"
                 "Size: %d x %d\n"
+                "Shown at: %d x %d (%s)\n"
+                "Remote DPI compensation: %d%%\n"
                 "Pixel format: %s\n"
+                "Line speed estimate: %d kbit/s\n"
+                "JPEG quality: %s\n"
                 "(server default %s)\n"
                 "Requested encoding: %s\n"
                 "Last used encoding: %s\n"
@@ -769,8 +1287,16 @@ class ViewerApp:
                 "Security: %s\n"
                 "Bytes received: %d" %
                 (c.name, self.host, self.port, c.fb.width, c.fb.height,
-                 "depth 24 (32bpp) little-endian rgb888", c.server_pf,
-                 enc.encoding_name(c.encodings_list()[1]),
+                 self.display_geometry[2], self.display_geometry[3],
+                 "1:1" if self.scaler.identity else
+                 "Lanczos-3" if self.scaler.support == 3.0 else
+                 "bicubic",
+                 self.remote_dpi_var.get(),
+                 c.pf, c.bps_estimate // 1000,
+                 c.quality if c.jpeg_enabled() else "off",
+                 c.server_pf,
+                 enc.encoding_name(enc.TIGHT if c.options.auto_select
+                                   else c.options.preferred_encoding),
                  enc.encoding_name(c.last_encoding)
                  if c.last_encoding is not None else "-",
                  c.version[0], c.version[1],
@@ -780,6 +1306,10 @@ class ViewerApp:
 
 
 def main(options):
+    from .dpi import enable_dpi_awareness
+    awareness = enable_dpi_awareness()
+    if awareness:
+        log("DPI awareness: %s" % awareness)
     log("SagatVNC Viewer %s (Python %s, Tk %s)" %
         (__version__, sys.version.split()[0], tk.TkVersion))
     return ViewerApp(options).run()

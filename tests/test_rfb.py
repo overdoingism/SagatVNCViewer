@@ -14,12 +14,14 @@ from sagatvnc.rfb.decoders import make_decoders
 from sagatvnc.rfb.des import (deobfuscate_password, des_decrypt, des_encrypt,
                               obfuscate_password, vnc_key)
 from sagatvnc.rfb.framebuffer import FrameBuffer
-from sagatvnc.rfb.pixelformat import PixelFormat
+from sagatvnc.rfb.pixelformat import PixelCodec, PixelFormat
 from sagatvnc.rfb.security import AuthFailure, parse_security_types
 from sagatvnc.viewer.keysyms import event_to_keysym
 from sagatvnc.viewer.parameters import UsageError, parse_args, parse_server
 
 from tests import fakeserver as fs
+
+FULL = PixelCodec(PixelFormat.preferred())
 
 
 class DESTest(unittest.TestCase):
@@ -70,6 +72,37 @@ class ParameterTest(unittest.TestCase):
         self.assertEqual(parse_security_types("VncAuth,none"),
                          [enc.SEC_VNC_AUTH, enc.SEC_NONE])
 
+    def test_security_types_from_tigervnc_file(self):
+        # Exactly what a TigerVNC-saved .tigervnc file contained
+        text = ("None,VncAuth,RA2ne,RA2ne_256,Plain,DH,MSLogonII,TLSNone,"
+                "TLSVnc,TLSPlain,X509None,X509Vnc,X509Plain,RA2,RA2_256")
+        logs = []
+        types = parse_security_types(text, logs.append)
+        self.assertEqual(types, [enc.SEC_NONE, enc.SEC_VNC_AUTH,
+                                 enc.SEC_PLAIN, enc.SEC_TLS_NONE,
+                                 enc.SEC_TLS_VNC, enc.SEC_TLS_PLAIN,
+                                 enc.SEC_X509_NONE, enc.SEC_X509_VNC,
+                                 enc.SEC_X509_PLAIN])
+        self.assertEqual(len(logs), 1)
+        self.assertIn("RA2ne", logs[0])
+
+    def test_security_types_errors(self):
+        with self.assertRaises(ValueError):
+            parse_security_types("RA2,DH")           # nothing usable
+        with self.assertRaises(ValueError):
+            parse_security_types("VncAuth,Bogus")    # nobody knows this
+
+    def test_unsupported_preferred_encoding_falls_back(self):
+        from types import SimpleNamespace
+        from sagatvnc.viewer.app import ViewerApp
+        opts = parse_args(["-PreferredEncoding=H.264", "-AutoSelect=0"])
+        co = ViewerApp.connection_options(SimpleNamespace(opts=opts))
+        self.assertEqual(co.preferred_encoding, enc.TIGHT)
+        self.assertFalse(co.auto_select)
+        opts = parse_args(["-PreferredEncoding=Nonsense"])
+        with self.assertRaises(ValueError):
+            ViewerApp.connection_options(SimpleNamespace(opts=opts))
+
 
 class KeysymTest(unittest.TestCase):
     def test_mapping(self):
@@ -84,13 +117,14 @@ class KeysymTest(unittest.TestCase):
 class DecoderTest(unittest.TestCase):
     W, H = 70, 37    # deliberately not tile aligned
 
-    def decode(self, encoding, payload, w=None, h=None, fb=None, decoders=None):
+    def decode(self, encoding, payload, w=None, h=None, fb=None,
+               decoders=None, codec=None):
         w = w or self.W
         h = h or self.H
         fb = fb or FrameBuffer(w, h)
         decoders = decoders or make_decoders()
         s = fs.BytesStream(payload)
-        decoders[encoding].decode(0, 0, w, h, s, fb)
+        decoders[encoding].decode(0, 0, w, h, s, fb, codec or FULL)
         self.assertEqual(s.pos, len(payload), "decoder left data unread")
         return fb
 
@@ -109,7 +143,7 @@ class DecoderTest(unittest.TestCase):
         fb.image_rect(0, 0, 8, 8, fs.pattern(8, 8))
         before = fb.get_rect(0, 0, 4, 4)
         s = fs.BytesStream(struct.pack(">HH", 0, 0))
-        make_decoders()[enc.COPYRECT].decode(2, 3, 4, 4, s, fb)
+        make_decoders()[enc.COPYRECT].decode(2, 3, 4, 4, s, fb, FULL)
         self.assertEqual(fb.get_rect(2, 3, 4, 4), before)
 
     def test_rre(self):
@@ -259,9 +293,17 @@ class EndToEndTest(unittest.TestCase):
         self.server.wait_for("fbur")
         self.assertEqual(self.server.pixel_format,
                          PixelFormat.preferred().pack())
-        self.assertEqual(self.server.encodings[:2],
-                         [enc.COPYRECT, enc.TIGHT])
-        self.assertIn(enc.PSEUDO_EXTENDED_DESKTOP_SIZE, self.server.encodings)
+        # CConnection::updateEncodings() order: pseudo-encodings first,
+        # then the preferred encoding, CopyRect, the rest
+        e = self.server.encodings
+        self.assertEqual(e[0], enc.PSEUDO_CURSOR_WITH_ALPHA)
+        i = e.index(enc.TIGHT)
+        self.assertEqual(e[i + 1], enc.COPYRECT)
+        self.assertNotIn(enc.CORRE, e)
+        for p in (enc.PSEUDO_EXTENDED_DESKTOP_SIZE, enc.PSEUDO_FENCE,
+                  enc.PSEUDO_CONTINUOUS_UPDATES, enc.PSEUDO_LED_STATE,
+                  enc.PSEUDO_QEMU_KEY_EVENT, enc.PSEUDO_EXTENDED_CLIPBOARD):
+            self.assertLess(e.index(p), i)
 
         img = fs.pattern(10, 10)
         name = b"renamed"
@@ -271,7 +313,8 @@ class EndToEndTest(unittest.TestCase):
                              struct.pack(">I", len(name)) + name),
         ], last_rect=True)
         m = self.server.wait_for("fbur")
-        self.assertEqual(m[1], 1)           # incremental follow-up
+        self.assertEqual(m[1], 1)           # incremental, sent at start
+        self.server.sync()
         self.assertEqual(self.conn.fb.get_rect(5, 5, 10, 10), img)
         self.assertEqual(self.handler.names, ["renamed"])
 
@@ -281,7 +324,7 @@ class EndToEndTest(unittest.TestCase):
         self.server.update([self.server.rect(0, 0, 80, 60,
                                              enc.PSEUDO_EXTENDED_DESKTOP_SIZE,
                                              screens)])
-        self.server.wait_for("fbur")
+        self.server.sync()
         self.assertEqual(self.handler.resizes, [(80, 60)])
         self.assertTrue(self.conn.supports_set_desktop_size)
         self.conn.set_desktop_size(100, 50)
@@ -310,6 +353,17 @@ class EndToEndTest(unittest.TestCase):
         self.thread.join(5)
         self.assertIsInstance(self.result.get("error"), AuthFailure)
         self.assertIn("Wrong password", str(self.result["error"]))
+
+    def test_server_order_decides_security_type(self):
+        # Client lists None first, server prefers VncAuth: as in TigerVNC,
+        # the server's order wins.
+        self.start(sec="None,VncAuth")
+        b = self.server.sock
+        b.sendall(b"RFB 003.008\n")
+        self.assertEqual(self.server.recv(12), b"RFB 003.008\n")
+        b.sendall(b"\x02\x02\x01")
+        self.assertEqual(self.server.recv(1), b"\x02")
+        self.finish()
 
     def test_no_auth(self):
         self.start(password=None, sec="None")

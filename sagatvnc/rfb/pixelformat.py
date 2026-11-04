@@ -63,6 +63,22 @@ class PixelFormat:
                  self.red_shift, self.green_shift, self.blue_shift))
 
 
+    def __eq__(self, other):
+        return isinstance(other, PixelFormat) and self.pack() == other.pack()
+
+    def __hash__(self):
+        return hash(self.pack())
+
+
+# TigerVNC's low colour formats (vncviewer/CConn.cxx), chosen by
+# LowColorLevel when FullColor is off or AutoSelect sees < 256 kbit/s.
+VERY_LOW_COLOUR = PixelFormat(8, 3, False, True, 1, 1, 1, 2, 1, 0)   # 8
+LOW_COLOUR = PixelFormat(8, 6, False, True, 3, 3, 3, 4, 2, 0)        # 64
+MEDIUM_COLOUR = PixelFormat(8, 8, False, True, 7, 7, 3, 5, 2, 0)     # 256
+LOW_COLOUR_LEVELS = (VERY_LOW_COLOUR, LOW_COLOUR, MEDIUM_COLOUR)
+LOW_COLOUR_NAMES = ("8 colours", "64 colours", "256 colours")
+
+
 def rgbx_to_rgb(raw):
     """Convert packed R,G,B,X pixels (our wire format) to packed RGB."""
     n = len(raw) // 4
@@ -71,3 +87,55 @@ def rgbx_to_rgb(raw):
     out[1::3] = raw[1::4]
     out[2::3] = raw[2::4]
     return out
+
+
+def _identity(buf):
+    return buf
+
+
+class PixelCodec:
+    """Turns wire pixels of one PixelFormat into the framebuffer's RGB.
+
+    Decoders use three kinds of pixel:
+
+    * ``bypp`` byte PIXELs (Raw, Hextile, RRE, palettes)
+    * ZRLE CPIXELs, ``cpix`` bytes (3 for our 32 bpp format)
+    * Tight TPIXELs, ``tpix`` bytes (always R,G,B when the format is 888)
+
+    Only the formats this viewer requests are supported: the full colour
+    PixelFormat.preferred() and the 8 bpp true colour low colour formats.
+    """
+
+    def __init__(self, pf):
+        self.pf = pf
+        if pf == PixelFormat.preferred():
+            self.bypp = 4
+            self.to_rgb = rgbx_to_rgb
+            self.cpix, self.cpix_to_rgb = 3, _identity   # R,G,B
+            self.tpix, self.tpix_to_rgb = 3, _identity   # R,G,B
+        elif pf.true_colour and pf.bpp == 8:
+            self.bypp = 1
+            tables = []
+            for mx, sh in ((pf.red_max, pf.red_shift),
+                           (pf.green_max, pf.green_shift),
+                           (pf.blue_max, pf.blue_shift)):
+                tables.append(bytes(((p >> sh) & mx) * 255 // mx
+                                    if mx else 0 for p in range(256)))
+            rt, gt, bt = tables
+
+            def to_rgb(buf):
+                buf = bytes(buf)
+                out = bytearray(len(buf) * 3)
+                out[0::3] = buf.translate(rt)
+                out[1::3] = buf.translate(gt)
+                out[2::3] = buf.translate(bt)
+                return out
+            self.to_rgb = to_rgb
+            self.cpix, self.cpix_to_rgb = 1, to_rgb
+            self.tpix, self.tpix_to_rgb = 1, to_rgb
+        else:
+            raise ValueError("Unsupported pixel format: %s" % pf)
+
+    def pixel(self, raw):
+        """One PIXEL (bypp bytes) -> 3 byte RGB."""
+        return bytes(self.to_rgb(raw[:self.bypp]))

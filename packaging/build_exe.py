@@ -4,7 +4,7 @@
 """Build dist/SagatVNCViewer.exe with PyInstaller.
 
     python -m venv .venv
-    .venv\\Scripts\\python -m pip install pyinstaller
+    .venv\\Scripts\\python -m pip install pyinstaller pillow
     .venv\\Scripts\\python packaging\\build_exe.py
 
 The result is a single windowed .exe.  Drop a .tigervnc file on it (or
@@ -20,6 +20,12 @@ ROOT = os.path.dirname(HERE)
 
 
 def main():
+    try:
+        import PIL  # noqa: F401  (bundled for window scaling)
+    except ImportError:
+        print("Pillow is missing: the exe would have no scaling. "
+              "Run: pip install pillow", file=sys.stderr)
+        return 1
     build = os.path.join(ROOT, "build")
     os.makedirs(build, exist_ok=True)
     icon = os.path.join(build, "sagatvnc.ico")

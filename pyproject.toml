@@ -11,6 +11,10 @@ license = "GPL-2.0-or-later"
 license-files = ["LICENSE"]
 requires-python = ">=3.9"
 dependencies = []
+
+[project.optional-dependencies]
+# Smooth scaling of the remote desktop to the window (Lanczos/bicubic)
+scaling = ["pillow>=9.1"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Environment :: X11 Applications",

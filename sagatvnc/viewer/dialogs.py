@@ -95,7 +95,8 @@ class ServerDialog(_Modal):
 
 
 class AuthDialog(_Modal):
-    def __init__(self, parent, need_username, secure, host):
+    def __init__(self, parent, need_username, secure, host,
+                 offer_keep=False):
         super().__init__(parent, "VNC authentication")
         frame = ttk.Frame(self, padding=12)
         frame.pack(fill="both", expand=True)
@@ -118,6 +119,13 @@ class AuthDialog(_Modal):
                        width=28)
         pe.grid(row=row, column=1, sticky="we", padx=(8, 0), pady=(4, 0))
         row += 1
+        # AuthDialog.cxx: only offered when reconnecting is possible
+        self.keep = tk.BooleanVar(value=False)
+        if offer_keep:
+            ttk.Checkbutton(frame, text="Keep password for reconnect",
+                            variable=self.keep).grid(
+                row=row, column=0, columnspan=2, sticky="w", pady=(6, 0))
+            row += 1
         buttons = ttk.Frame(frame)
         buttons.grid(row=row, column=0, columnspan=2, sticky="e",
                      pady=(12, 0))
@@ -129,5 +137,5 @@ class AuthDialog(_Modal):
 
     def ok(self):
         self.result = (self.user.get() if self.need_username else "",
-                       self.password.get())
+                       self.password.get(), self.keep.get())
         self.destroy()
