@@ -1,0 +1,100 @@
+# SagatVNC Viewer - icon generator
+# Copyright (C) 2026 SagatVNC Viewer contributors
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""Draw the SagatVNC icon (a one-eyed tiger-orange face with an eye patch)
+and write it as a multi-size .ico, using only the standard library."""
+
+import math
+import struct
+import sys
+import zlib
+
+ORANGE = (243, 132, 30)
+DARK = (25, 22, 20)
+WHITE = (250, 248, 240)
+
+
+def shade(x, y):
+    """Colour (r, g, b, a) at normalised coordinates in [-1, 1]."""
+    r = math.hypot(x, y)
+    if r > 0.96:
+        return (0, 0, 0, 0)
+    # Eye patch strap: a band from top-left to the right edge
+    # (line through (-0.9, -0.6) and the patch centre (0.38, -0.12))
+    if abs(y - (-0.6 + 0.375 * (x + 0.9))) < 0.055 and x < 0.38:
+        return DARK + (255,)
+    # Patch over the (viewer's) right eye
+    if ((x - 0.38) / 0.30) ** 2 + ((y + 0.12) / 0.24) ** 2 < 1:
+        return DARK + (255,)
+    # The one open eye
+    ex, ey = (x + 0.38) / 0.24, (y + 0.12) / 0.17
+    if ex * ex + ey * ey < 1:
+        if (x + 0.36) ** 2 + (y + 0.12) ** 2 < 0.11 ** 2:
+            return DARK + (255,)
+        return WHITE + (255,)
+    # Tiger stripes on the cheeks and forehead
+    for sx, sy, ang in ((-0.72, 0.25, 0.45), (0.72, 0.25, -0.45),
+                        (-0.62, 0.55, 0.35), (0.62, 0.55, -0.35),
+                        (0.12, -0.72, 1.35), (-0.12, -0.72, -1.35)):
+        dx, dy = x - sx, y - sy
+        u = dx * math.cos(ang) + dy * math.sin(ang)
+        v = -dx * math.sin(ang) + dy * math.cos(ang)
+        if abs(v) < 0.07 - 0.25 * abs(u) and abs(u) < 0.26:
+            return DARK + (255,)
+    # Grim mouth
+    if abs(y - 0.5) < 0.035 and abs(x) < 0.25:
+        return DARK + (255,)
+    edge = 0.96 - r
+    a = 255 if edge > 0.02 else int(255 * edge / 0.02)
+    return ORANGE + (a,)
+
+
+def render(size, ss=3):
+    rows = []
+    for py in range(size):
+        row = bytearray([0])     # PNG filter type 0
+        for px in range(size):
+            acc = [0, 0, 0, 0]
+            for j in range(ss):
+                for i in range(ss):
+                    x = ((px + (i + 0.5) / ss) / size) * 2 - 1
+                    y = ((py + (j + 0.5) / ss) / size) * 2 - 1
+                    c = shade(x, y)
+                    for k in range(3):
+                        acc[k] += c[k] * c[3]
+                    acc[3] += c[3]
+            n = ss * ss
+            a = acc[3] / n
+            if acc[3]:
+                row += bytes(int(acc[k] / acc[3]) for k in range(3))
+            else:
+                row += b"\0\0\0"
+            row.append(int(a))
+        rows.append(bytes(row))
+    return b"".join(rows)
+
+
+def png(size):
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data +
+                struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+    ihdr = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) +
+            chunk(b"IDAT", zlib.compress(render(size), 9)) +
+            chunk(b"IEND", b""))
+
+
+def write_ico(path, sizes=(16, 24, 32, 48, 64, 128, 256)):
+    images = [png(s) for s in sizes]
+    out = struct.pack("<HHH", 0, 1, len(images))
+    offset = 6 + 16 * len(images)
+    for s, data in zip(sizes, images):
+        out += struct.pack("<BBBBHHII", s % 256, s % 256, 0, 0, 1, 32,
+                           len(data), offset)
+        offset += len(data)
+    with open(path, "wb") as f:
+        f.write(out + b"".join(images))
+
+
+if __name__ == "__main__":
+    write_ico(sys.argv[1] if len(sys.argv) > 1 else "sagatvnc.ico")

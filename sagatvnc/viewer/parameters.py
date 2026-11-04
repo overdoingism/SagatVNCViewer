@@ -98,6 +98,7 @@ class Options:
         for p in PARAMS:
             setattr(self, p.name.lower(), p.default)
         self.server = ""
+        self.config_file = ""
 
     def __getattr__(self, name):
         # Allow TigerVNC style CamelCase access as well

@@ -23,6 +23,27 @@ Or install it with `pip install .` and run `sagatvncviewer`. Options work like
 `-Name value`, `-Name=value`, `--Name=value` or `Name=value`. Run
 `python -m sagatvnc -help` for the full list.
 
+### `.tigervnc` files
+
+Connection files saved by TigerVNC (`TigerVNC Configuration file Version 1.0`)
+can be passed in place of the server name, and you can drag them onto
+`SagatVNCViewer.exe`. As in TigerVNC, values in the file override the
+command line. If `ServerName` is empty, the connection dialog appears.
+TigerVNC parameters that this port doesn't implement (e.g. `FullScreenMode`)
+are ignored and logged.
+
+### Windows executable
+
+```bash
+python -m venv .venv
+.venv\Scripts\python -m pip install pyinstaller
+.venv\Scripts\python packaging\build_exe.py
+```
+
+This produces a single windowed `dist\SagatVNCViewer.exe`. Because it has no
+console, it logs to `%APPDATA%\SagatVNC\sagatvnc.log` and reports errors in
+dialogs.
+
 Press **F8** (`-MenuKey`) inside the session to open the popup menu. It has
 full screen, Ctrl/Alt toggles, Send Ctrl-Alt-Del, refresh, view-only,
 connection info and disconnect.
