@@ -1,0 +1,188 @@
+# SagatVNC Viewer - a Python port of the TigerVNC viewer
+# Copyright (C) 2026 SagatVNC Viewer contributors
+# Based on TigerVNC common/rfb/CSecurity{VncAuth,Plain,VeNCrypt,TLS}.cxx,
+# Copyright (C) 2002-2005 RealVNC Ltd., Copyright (C) 2005 Martin Koegler,
+# Copyright (C) 2006 OCCAM Financial Technology, Copyright (C) 2010
+# TigerVNC Team, and TigerVNC contributors.
+#
+# This is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+"""Client side security types: None, VncAuth, Plain and VeNCrypt (TLS/X509)."""
+
+import hashlib
+import os
+import socket
+import ssl
+import struct
+
+from . import encodings as enc
+from .des import vnc_auth_response
+
+
+class AuthFailure(Exception):
+    pass
+
+
+class SecurityError(Exception):
+    pass
+
+
+def parse_security_types(text):
+    types = []
+    for name in text.split(","):
+        name = name.strip()
+        if not name:
+            continue
+        for key, value in enc.SEC_NAMES.items():
+            if key.lower() == name.lower():
+                types.append(value)
+                break
+        else:
+            raise ValueError("Unknown security type %r" % name)
+    return types
+
+
+def is_vencrypt_subtype(t):
+    return t >= 256
+
+
+class SecurityHandler:
+    """Runs the security phase on behalf of a Connection.
+
+    ``conn`` provides: ``stream``, ``host``, ``options`` (``security_types``
+    list, ``x509_ca`` path, ``known_hosts`` path) and the callbacks
+    ``get_credentials(need_username) -> (user, password)`` and
+    ``verify_certificate(info) -> bool``.
+    """
+
+    def __init__(self, conn):
+        self.conn = conn
+        self.secure = False
+
+    # -- entry point --------------------------------------------------------
+    def run(self, sec_type):
+        if sec_type == enc.SEC_NONE:
+            return
+        if sec_type == enc.SEC_VNC_AUTH:
+            self.vnc_auth()
+        elif sec_type == enc.SEC_VENCRYPT:
+            self.vencrypt()
+        elif sec_type == enc.SEC_PLAIN:
+            self.plain()
+        else:
+            raise SecurityError("Security type %s not supported" %
+                                enc.sec_name(sec_type))
+
+    # -- simple types -------------------------------------------------------
+    def vnc_auth(self):
+        challenge = self.conn.stream.read(16)
+        _, password = self.conn.get_credentials(False)
+        self.conn.stream.write(vnc_auth_response(password, challenge))
+
+    def plain(self):
+        user, password = self.conn.get_credentials(True)
+        u = user.encode("utf-8")
+        p = password.encode("utf-8")
+        self.conn.stream.write(struct.pack(">II", len(u), len(p)) + u + p)
+
+    # -- VeNCrypt -----------------------------------------------------------
+    def vencrypt(self):
+        s = self.conn.stream
+        major, minor = s.u8(), s.u8()
+        if (major << 8 | minor) < 0x0002:
+            s.write(b"\0\0")
+            raise SecurityError("The server reported an unsupported "
+                                "VeNCrypt version")
+        s.write(b"\0\2")
+        if s.u8():
+            raise SecurityError("The server reported that it could not "
+                                "support the client's VeNCrypt version")
+        count = s.u8()
+        if not count:
+            raise SecurityError("The server reported no VeNCrypt sub-types")
+        offered = [s.u32() for _ in range(count)]
+        enabled = self.conn.options.security_types
+        chosen = next((t for t in offered if t in enabled
+                       and is_vencrypt_subtype(t)), None)
+        if chosen is None:
+            raise SecurityError("No valid VeNCrypt sub-type (server offers %s)"
+                                % ", ".join(enc.sec_name(t) for t in offered))
+        self.conn.log("Choosing security type %s (%d)" %
+                      (enc.sec_name(chosen), chosen))
+        s.write(struct.pack(">I", chosen))
+
+        if chosen == enc.SEC_PLAIN:
+            self.plain()
+            return
+        anon = chosen in (enc.SEC_TLS_NONE, enc.SEC_TLS_VNC, enc.SEC_TLS_PLAIN)
+        if s.u8() == 0:
+            raise SecurityError("Server failed to initialize TLS session")
+        self.start_tls(anon)
+        if chosen in (enc.SEC_TLS_VNC, enc.SEC_X509_VNC):
+            self.vnc_auth()
+        elif chosen in (enc.SEC_TLS_PLAIN, enc.SEC_X509_PLAIN):
+            self.plain()
+
+    def start_tls(self, anon):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ca = self.conn.options.x509_ca
+        if anon:
+            ctx.verify_mode = ssl.CERT_NONE
+            # Anonymous Diffie-Hellman only exists up to TLS 1.2
+            ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+            try:
+                ctx.set_ciphers("aNULL:@SECLEVEL=0")
+            except ssl.SSLError:
+                raise SecurityError("This Python/OpenSSL build has no "
+                                    "anonymous TLS ciphers")
+        elif ca:
+            ctx.verify_mode = ssl.CERT_REQUIRED
+            ctx.check_hostname = True
+            ctx.load_verify_locations(ca)
+        else:
+            # Trust on first use, checked against known_hosts below
+            ctx.verify_mode = ssl.CERT_NONE
+        sock = ctx.wrap_socket(self.conn.stream.sock,
+                               server_hostname=None if anon or not ca
+                               else self.conn.host)
+        self.conn.stream.replace_socket(sock)
+        if not anon and not ca:
+            self._check_known_host(sock)
+        self.secure = not anon
+
+    def _check_known_host(self, sock):
+        der = sock.getpeercert(binary_form=True)
+        if not der:
+            raise SecurityError("The server did not present a certificate")
+        fp = hashlib.sha256(der).hexdigest()
+        path = self.conn.options.known_hosts
+        host = self.conn.host
+        known = {}
+        if path and os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) == 2:
+                        known[parts[0]] = parts[1]
+        if known.get(host) == fp:
+            return
+        info = {"host": host, "fingerprint": fp,
+                "changed": host in known}
+        if not self.conn.verify_certificate(info):
+            raise SecurityError("The server certificate was not accepted")
+        if path:
+            known[host] = fp
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                for h, v in known.items():
+                    f.write("%s %s\n" % (h, v))
+
+
+def connect_socket(host, port, timeout=None):
+    sock = socket.create_connection((host, port), timeout=timeout)
+    sock.settimeout(None)
+    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    return sock
