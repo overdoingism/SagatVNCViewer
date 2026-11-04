@@ -68,6 +68,12 @@ PARAMS = [
           "always the local system arrow. The server is always asked for "
           "the shape, so it never draws its own cursor into the desktop "
           "image. SagatVNC only"),
+    Param("BlankCursorAsIBeam", bool, True,
+          "Show the local text cursor when the server sends a visible but "
+          "fully transparent cursor. TigerVNC's winvnc does that for the "
+          "Windows I-beam (a colour cursor without alpha), which otherwise "
+          "disappears. Turn off if a server hides the pointer that way "
+          "(e.g. during video). SagatVNC only"),
     Param("AlwaysCursor", bool, False,
           "Show local cursor when not provided by the server "
           "(with RemoteCursorShape)"),

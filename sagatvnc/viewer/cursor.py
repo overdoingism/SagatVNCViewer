@@ -141,6 +141,47 @@ def enlarge_nearest(w, h, hot_x, hot_y, rgba, n):
     return w * n, h * n, hot_x * n, hot_y * n, bytes(out)
 
 
+def resize_nearest(w, h, hot_x, hot_y, rgba, factor):
+    """Nearest-neighbour resize by any factor: edges stay hard, colours
+    stay exactly black/white (for pixel-art cursors when enlarging)."""
+    nw = max(1, min(256, round(w * factor)))
+    nh = max(1, min(256, round(h * factor)))
+    out = bytearray(nw * nh * 4)
+    for y in range(nh):
+        sy = min(h - 1, int(y * h / nh))
+        for x in range(nw):
+            sx = min(w - 1, int(x * w / nw))
+            s = (sy * w + sx) * 4
+            out[(y * nw + x) * 4:(y * nw + x) * 4 + 4] = rgba[s:s + 4]
+    return (nw, nh, min(nw - 1, int(hot_x * nw / w)),
+            min(nh - 1, int(hot_y * nh / h)), bytes(out))
+
+
+# Windows draws cursors for 96 DPI at 32x32 and a DPI-unaware server such
+# as winvnc only ever sees those; the local system cursor size tells us
+# how big that should look here (48 at 150-175%, 64 at 200%).
+BASE_CURSOR_SIZE = 32
+
+
+def cursor_scale_for_display():
+    size = system_cursor_size()
+    if not size:
+        return 1.0
+    return max(1.0, size[0] / BASE_CURSOR_SIZE)
+
+
+def resize_cursor(w, h, hot_x, hot_y, rgba, factor):
+    """Resize keeping black/white cursors crisp: nearest when enlarging,
+    per-tone pooling when shrinking; colour cursors smoothly."""
+    if abs(factor - 1.0) < 0.01:
+        return w, h, hot_x, hot_y, rgba
+    if factor < 1:
+        return shrink_cursor(w, h, hot_x, hot_y, rgba, factor)
+    if _tones(rgba)[2]:
+        return resize_nearest(w, h, hot_x, hot_y, rgba, factor)
+    return scale_cursor(w, h, hot_x, hot_y, rgba, factor)
+
+
 def shrink_cursor(w, h, hot_x, hot_y, rgba, factor):
     """Shrink a cursor that doesn't fit.
 
@@ -224,8 +265,9 @@ class CursorManager:
     """Keeps the canvas cursor in step with the server's cursor shape."""
 
     def __init__(self, widget, always_cursor=False, cursor_type="dot",
-                 remote_shape=True):
+                 remote_shape=True, blank_as_ibeam=True):
         self.widget = widget
+        self.blank_as_ibeam = blank_as_ibeam
         # With remote_shape off, always the local system arrow.  The server
         # is asked for its cursor shape either way - that is what stops it
         # drawing a (possibly misplaced) cursor into the desktop image.
@@ -251,14 +293,10 @@ class CursorManager:
         self.shape = (w, h, hot_x, hot_y, rgba)
         self.apply()
 
-    @staticmethod
-    def _whole(factor):
-        return int(factor) if factor >= 2 else 1
-
     def set_scale(self, factor):
-        old, self.scale = self._whole(self.scale), factor
-        if self._whole(factor) != old and self.shape:
-            self.apply()
+        """The view scale.  Cursors are sized for the local display
+        instead (see apply), so this only records it."""
+        self.scale = factor
 
     def show(self):
         """The pointer is over the desktop: put our cursor back, without
@@ -295,20 +333,29 @@ class CursorManager:
             self._set("arrow")
             return
         w, h, hx, hy, rgba = self.shape
-        blank = w == 0 or h == 0 or not any(rgba[3::4])
-        if blank:
+        if w == 0 or h == 0:
             # The server hides its cursor (e.g. while typing)
             self._set(self.fallback if self.always_cursor else "none")
+            return
+        if not any(rgba[3::4]):
+            # Visible but fully transparent.  TigerVNC's winvnc sends
+            # Windows' I-beam like that: it is a colour cursor whose alpha
+            # is all 0 (it relies on its AND/XOR masks to invert), and
+            # winvnc only looks at the alpha (DeviceFrameBuffer::
+            # setCursor).  Show the local I-beam - a real inverting one.
+            if self.blank_as_ibeam:
+                self._set("xterm")
+            else:
+                self._set(self.fallback if self.always_cursor else "none")
             return
         if not CUSTOM_SUPPORTED:
             self._set("arrow")
             return
         w, h, hx, hy, rgba = ensure_contrast(w, h, hx, hy, rgba)
-        # Like upstream, the cursor is shown 1:1 and not shrunk with the
-        # view (thin lines would blur away); only a view enlarged 2x or
-        # more enlarges it, by whole pixels
-        n = int(self.scale) if self.scale >= 2 else 1
-        w, h, hx, hy, rgba = enlarge_nearest(w, h, hx, hy, rgba, n)
+        # As big as local cursors (a DPI-unaware server sends 96 DPI
+        # cursors); not shrunk with the view, where thin lines would vanish
+        w, h, hx, hy, rgba = resize_cursor(w, h, hx, hy, rgba,
+                                           cursor_scale_for_display())
         size = system_cursor_size()
         if size:
             w, h, hx, hy, rgba = fit_to_canvas(w, h, hx, hy, rgba, size)

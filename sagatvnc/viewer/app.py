@@ -501,7 +501,8 @@ class ViewerApp:
             self.cursors = CursorManager(self.canvas,
                                          bool(self.opts.alwayscursor),
                                          self.opts.cursortype,
-                                         self.remote_cursor_var.get())
+                                         self.remote_cursor_var.get(),
+                                         bool(self.opts.blankcursorasibeam))
             self.hbar = tk.Scrollbar(root, orient="horizontal",
                                      command=self.canvas.xview)
             self.vbar = tk.Scrollbar(root, orient="vertical",

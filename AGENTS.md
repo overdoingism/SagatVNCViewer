@@ -63,7 +63,9 @@ Deliberate differences from upstream, kept on purpose:
   LoadCursorFromFile (Tk "@file") stretches cursors to SM_CXCURSOR, which
   distorts them and moves the hotspot. `cursor.fit_to_canvas` pads them to
   exactly that size instead.
-  Cursors are shown 1:1, as upstream does, and NOT shrunk with the view:
+  Cursor size follows the LOCAL display (SM_CXCURSOR / 32), not the
+  view. A DPI-unaware winvnc sends 96 DPI 32px cursors, which looked tiny
+  on a 175% screen. Cursors are never shrunk with the view:
   winvnc sends the XOR I-beam as a 1px black line with a 1px white outline,
   and smooth resampling turns that into an invisible grey smear. Bigger
   views enlarge cursors by whole pixels (nearest). Shrinking happens only
@@ -71,6 +73,12 @@ Deliberate differences from upstream, kept on purpose:
   uses per-tone max pooling (`shrink_cursor`). One-tone cursors get an
   opposite-tone outline (`ensure_contrast`), like winvnc's, so they show
   on any background.
+- **Windows I-beam**: winvnc sends it fully transparent. It is a colour
+  cursor with all-zero alpha that inverts through its masks, and winvnc
+  reads only the alpha. A visible but fully transparent cursor therefore
+  shows Tk's "xterm" (the native I-beam); 0x0 means hidden.
+  `BlankCursorAsIBeam=0` turns this workaround off (a server bug, not in
+  upstream's viewer).
 - Pointer events only over the desktop image (upstream's Viewport is only
   that big): nothing over the black bars unless dragging, and one clamped
   "leave" event when the pointer crosses out.

@@ -109,6 +109,37 @@ class FitToCanvasTest(unittest.TestCase):
         self.assertEqual((w, h, hx, hy), (18, 40, 8, 20))
         self.assertEqual(self.middle_row(w, h, d), [255, 255, 0, 0, 255, 255])
 
+    def test_transparent_cursor_becomes_local_ibeam(self):
+        """winvnc sends Windows' I-beam fully transparent (colour cursor
+        with zero alpha); 0x0 means really hidden"""
+        from sagatvnc.viewer.cursor import CursorManager
+
+        class Widget:
+            cursor = None
+
+            def configure(self, cursor):
+                self.cursor = cursor
+        wdg = Widget()
+        m = CursorManager(wdg)
+        m.set_shape(1, 1, 0, 0, b"\0\0\0\0")
+        self.assertEqual(wdg.cursor, "xterm")
+        m.set_shape(0, 0, 0, 0, b"")
+        self.assertEqual(wdg.cursor, "none")
+        m = CursorManager(wdg, blank_as_ibeam=False)
+        m.set_shape(1, 1, 0, 0, b"\0\0\0\0")
+        self.assertEqual(wdg.cursor, "none")
+
+    def test_enlarge_two_tone_by_1_5_stays_crisp(self):
+        from sagatvnc.viewer.cursor import resize_cursor
+        w, h, hx, hy, d = resize_cursor(9, 20, 4, 10, self.ibeam(), 1.5)
+        self.assertEqual((w, h), (14, 30))
+        self.assertEqual((hx, hy), (6, 15))
+        row = self.middle_row(w, h, d)
+        self.assertIn(0, row)
+        self.assertTrue(set(row) <= {0, 255})           # no grey
+        alphas = set(d[3::4])
+        self.assertTrue(alphas <= {0, 255})
+
     def test_dpi_alias_in_tigervnc_file(self):
         import os
         import tempfile
