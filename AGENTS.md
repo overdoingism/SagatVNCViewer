@@ -63,6 +63,14 @@ Deliberate differences from upstream, kept on purpose:
   LoadCursorFromFile (Tk "@file") stretches cursors to SM_CXCURSOR, which
   distorts them and moves the hotspot. `cursor.fit_to_canvas` pads them to
   exactly that size instead.
+  Cursors are shown 1:1, as upstream does, and NOT shrunk with the view:
+  winvnc sends the XOR I-beam as a 1px black line with a 1px white outline,
+  and smooth resampling turns that into an invisible grey smear. Bigger
+  views enlarge cursors by whole pixels (nearest). Shrinking happens only
+  when a cursor is bigger than SM_CXCURSOR. For black/white cursors it
+  uses per-tone max pooling (`shrink_cursor`). One-tone cursors get an
+  opposite-tone outline (`ensure_contrast`), like winvnc's, so they show
+  on any background.
 - Pointer events only over the desktop image (upstream's Viewport is only
   that big): nothing over the black bars unless dragging, and one clamped
   "leave" event when the pointer crosses out.

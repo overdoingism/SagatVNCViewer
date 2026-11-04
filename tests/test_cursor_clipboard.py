@@ -66,6 +66,49 @@ class FitToCanvasTest(unittest.TestCase):
         self.assertEqual((w, h, hx, hy), (4, 4, 3, 3))
         self.assertEqual(out[16:32], rgba[32:48])      # row 1, cols 0-3
 
+    @staticmethod
+    def ibeam(w=9, h=20):
+        """winvnc's I-beam: 1px black bar with a 1px white outline"""
+        rgba = bytearray(w * h * 4)
+        for y in range(1, h - 1):
+            for x in (3, 4, 5):
+                o = (y * w + x) * 4
+                rgba[o:o + 4] = b"\0\0\0\xff" if x == 4 and 1 < y < h - 2 \
+                    else b"\xff\xff\xff\xff"
+        return bytes(rgba)
+
+    def middle_row(self, w, h, rgba):
+        r = h // 2
+        return [rgba[(r * w + x) * 4] for x in range(w)
+                if rgba[(r * w + x) * 4 + 3]]
+
+    def test_shrunk_ibeam_keeps_black_line_and_white_edge(self):
+        from sagatvnc.viewer.cursor import shrink_cursor
+        for f in (0.8, 0.62, 0.5):
+            w, h, hx, hy, d = shrink_cursor(9, 20, 4, 10, self.ibeam(), f)
+            row = self.middle_row(w, h, d)
+            self.assertIn(0, row, "black line lost at %.2f" % f)
+            self.assertEqual((row[0], row[-1]), (255, 255),
+                             "white edge lost at %.2f" % f)
+            self.assertTrue(set(row) <= {0, 255})       # no grey smear
+
+    def test_one_tone_cursor_gets_outline(self):
+        from sagatvnc.viewer.cursor import ensure_contrast
+        bare = bytearray(5 * 5 * 4)
+        bare[(2 * 5 + 2) * 4:(2 * 5 + 2) * 4 + 4] = b"\0\0\0\xff"
+        w, h, hx, hy, d = ensure_contrast(5, 5, 2, 2, bytes(bare))
+        self.assertEqual((w, h, hx, hy), (7, 7, 3, 3))
+        self.assertEqual(self.middle_row(w, h, d), [255, 0, 255])
+        # two-tone cursors (like the I-beam above) are left alone
+        self.assertEqual(ensure_contrast(9, 20, 4, 10, self.ibeam())[:2],
+                         (9, 20))
+
+    def test_enlarge_nearest_is_crisp(self):
+        from sagatvnc.viewer.cursor import enlarge_nearest
+        w, h, hx, hy, d = enlarge_nearest(9, 20, 4, 10, self.ibeam(), 2)
+        self.assertEqual((w, h, hx, hy), (18, 40, 8, 20))
+        self.assertEqual(self.middle_row(w, h, d), [255, 255, 0, 0, 255, 255])
+
     def test_dpi_alias_in_tigervnc_file(self):
         import os
         import tempfile
