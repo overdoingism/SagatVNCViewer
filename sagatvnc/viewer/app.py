@@ -163,6 +163,9 @@ class ViewerApp:
         self.pending_remote_resize = False
         self.last_remote_resize = 0.0
         self.resize_checked = False
+        self.window_ready = False
+        self.expected_window = None
+        self.ready_tries = 0
         self.saved_credentials = None
         self.button_mask = 0
         self.pending_pointer = None
@@ -530,6 +533,30 @@ class ViewerApp:
         # The outer Win32 window only exists once Tk has mapped it
         self.root.after(100, self.apply_local_ime)
         self.canvas.focus_set()
+        self.window_ready = False
+        self.ready_tries = 0
+        self.root.after(50, self._wait_for_window)
+
+    def _wait_for_window(self):
+        """Wait until the window is mapped at its real size.  Before
+        that Tk reports its 200x200 default, and a remote resize sent then
+        made Linux servers shrink their desktop to 200x200 and back,
+        leaving only the top-left corner repainted.  (Upstream only sends
+        resizes from real window resizes, so it never does that.)"""
+        self.ready_tries += 1
+        self.root.update_idletasks()
+        size = (self.root.winfo_width(), self.root.winfo_height())
+        settled = self.root.winfo_ismapped() and (
+            self.expected_window is None or self.fullscreen or
+            self._window_maximized() or
+            (abs(size[0] - self.expected_window[0]) <= 2 and
+             abs(size[1] - self.expected_window[1]) <= 2))
+        if not settled and self.ready_tries < 40:     # give up after ~2 s
+            self.root.after(50, self._wait_for_window)
+            return
+        self.window_ready = True
+        self.layout()
+        self.remote_resize()
 
     def apply_local_ime(self):
         on = self.local_ime_var.get()
@@ -572,6 +599,7 @@ class ViewerApp:
                 else:
                     w, h = min(width, sw), min(height, sh)
                 self.root.geometry("%dx%d" % (w, h))
+                self.expected_window = (w, h)
         self.root.update_idletasks()
         self.layout(force=True)
 
@@ -584,8 +612,11 @@ class ViewerApp:
             self.hbar.grid_remove()
             self.vbar.grid_remove()
             self.root.update_idletasks()
-            cw = max(1, self.canvas.winfo_width())
-            ch = max(1, self.canvas.winfo_height())
+            # Without scrollbars the canvas fills the toplevel, and the
+            # toplevel learns its new size first - use that, so we never
+            # lay out against a canvas still at its 200x200 default
+            cw = max(1, self.root.winfo_width())
+            ch = max(1, self.root.winfo_height())
             dw, dh = fit_size(fbw, fbh, cw, ch)
             self.canvas.configure(scrollregion=(0, 0, cw, ch))
             self.canvas.xview_moveto(0)
@@ -657,7 +688,11 @@ class ViewerApp:
 
     # -- remote resize (DesktopWindow::remoteResize) ---------------------------
     def on_configure(self, event):
-        if event.widget is not self.root:
+        # The layout depends on the *canvas* size, and the canvas gets its
+        # new size after the toplevel: reacting to the toplevel alone could
+        # lay out with the canvas still at its 200x200 default, leaving the
+        # desktop drawn small in the top-left corner
+        if event.widget is not self.root and event.widget is not self.canvas:
             return
         # Rescaling a full frame costs tens of ms: coalesce resize events
         if self.layout_job:
@@ -678,6 +713,8 @@ class ViewerApp:
         conn = self.conn
         if self.view_only() or not self.opts.remoteresize:
             return
+        if not self.window_ready:
+            return            # _wait_for_window() calls us when it is
         if not conn or not conn.fb or not conn.supports_set_desktop_size:
             return
         if self.pending_remote_resize:
