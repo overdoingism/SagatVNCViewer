@@ -196,6 +196,9 @@ class ViewerApp:
         self.remote_dpi_var = tk.IntVar(value=dpi)
         self.calibrating = None        # previous compensation while active
         self.cursors = None
+        self.remote_cursor_var = tk.BooleanVar(
+            value=bool(options.remotecursorshape))
+        self.pointer_inside = False
         self.has_focus = False
         self.swallow_release = False
         self.local_ime_var = tk.BooleanVar(
@@ -498,7 +501,7 @@ class ViewerApp:
             self.cursors = CursorManager(self.canvas,
                                          bool(self.opts.alwayscursor),
                                          self.opts.cursortype,
-                                         bool(self.opts.remotecursorshape))
+                                         self.remote_cursor_var.get())
             self.hbar = tk.Scrollbar(root, orient="horizontal",
                                      command=self.canvas.xview)
             self.vbar = tk.Scrollbar(root, orient="vertical",
@@ -928,14 +931,54 @@ class ViewerApp:
             return
         bit = self._button_bit(event.num)
         if event.type == tk.EventType.ButtonPress:
+            if not self._over_desktop(event):
+                return            # a click on the black bars isn't ours
             self.button_mask |= bit
         else:
+            if not self.button_mask & bit:
+                return            # its press never went to the server
             self.button_mask &= ~bit
         self._flush_pointer()
         self._send_pointer(*self._fb_coords(event))
+        if not self.button_mask and not self._over_desktop(event):
+            self._pointer_left(event)         # a drag ended outside
+
+    def _over_desktop(self, event):
+        """Is the pointer over the desktop image (not the black bars or
+        outside the window)?  Upstream's Viewport widget is only as big as
+        the desktop, so it gets no events elsewhere."""
+        ox, oy = self.offset
+        x = self.canvas.canvasx(event.x) - ox
+        y = self.canvas.canvasy(event.y) - oy
+        _, _, dw, dh = self.display_geometry
+        return 0 <= x < dw and 0 <= y < dh
+
+    def _pointer_left(self, event):
+        """Viewport FL_LEAVE: one last (clamped) move event, then stop
+        tracking; outside the desktop the normal arrow is shown."""
+        self.pointer_inside = False
+        if self.cursors:
+            self.cursors.outside()
+        if self.view_only() or not self.conn:
+            return
+        self._flush_pointer()
+        self._send_pointer(*self._fb_coords(event))
+
+    def _pointer_entered(self):
+        self.pointer_inside = True
+        if self.cursors:
+            self.cursors.show()
 
     def on_motion(self, event):
         self.keyboard.mouse_event()
+        inside = self._over_desktop(event)
+        if not inside and not self.button_mask:
+            # Not dragging: nothing goes to the server out here
+            if self.pointer_inside:
+                self._pointer_left(event)
+            return
+        if inside and not self.pointer_inside:
+            self._pointer_entered()
         if self.view_only() or not self.conn:
             return
         x, y = self._fb_coords(event)
@@ -951,13 +994,11 @@ class ViewerApp:
                 self.pointer_job = self.root.after(delay, self._flush_pointer)
 
     def on_leave(self, event):
-        """Viewport FL_LEAVE: a last move event to help trigger edge
-        stuff.  (FLTK sends no FL_LEAVE during a drag; Tk can, so only do
-        it with no buttons held.)"""
-        if self.view_only() or not self.conn or self.button_mask:
+        """Left the window.  (FLTK sends no FL_LEAVE during a drag; Tk
+        can, so only with no buttons held.)"""
+        if self.button_mask or not self.pointer_inside:
             return
-        self._flush_pointer()
-        self._send_pointer(*self._fb_coords(event))
+        self._pointer_left(event)
 
     def _flush_pointer(self):
         if self.pointer_job:
@@ -1007,7 +1048,7 @@ class ViewerApp:
 
     def on_wheel(self, event):
         self.keyboard.mouse_event()
-        if self.view_only() or not self.conn or not event.delta:
+        if self.view_only() or not self.conn or not event.delta or                 not self._over_desktop(event):
             return
         # Tk on Windows reports a horizontal wheel (WM_MOUSEHWHEEL) as
         # Shift+wheel.  A Shift that is really held is just Shift + the
@@ -1020,7 +1061,7 @@ class ViewerApp:
 
     def on_x11_wheel(self, event):
         self.keyboard.mouse_event()
-        if self.view_only() or not self.conn:
+        if self.view_only() or not self.conn or                 not self._over_desktop(event):
             return
         self._wheel_click(event, event.num)
 
@@ -1083,6 +1124,12 @@ class ViewerApp:
                 command=self._picture_changed)
         m.add_cascade(label="JPEG quality", menu=quality_menu)
         self.picture_menus = (colour_menu, quality_menu)
+        m.add_checkbutton(label="Remote cursor shape",
+                          variable=self.remote_cursor_var,
+                          command=lambda: self.cursors.set_remote_shape(
+                              self.remote_cursor_var.get()),
+                          state="normal" if sys.platform == "win32"
+                          else "disabled")
         m.add_checkbutton(label="Local input method",
                           variable=self.local_ime_var,
                           command=self.apply_local_ime,

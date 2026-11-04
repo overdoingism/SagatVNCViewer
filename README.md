@@ -119,7 +119,7 @@ connection info and disconnect.
 | Picture         | Full colour or 256/64/8 colours (`FullColor`, `LowColorLevel`), JPEG quality (`QualityLevel`, `NoJPEG`), TigerVNC's `AutoSelect` bandwidth logic; switchable at runtime from the F8 menu |
 | Input           | Keyboard tracked per physical key, Windows AltGr merging, QEMU scan codes, lock-key LED sync; mouse, wheel (one click per event), pointer warps |
 | Clipboard       | Extended Clipboard (UTF-8, so Chinese/emoji survive) both ways; classic Latin-1 cut text for older servers |
-| Cursor          | Local system arrow by default; the server's shape with `-RemoteCursorShape` (Windows) |
+| Cursor          | The server's cursor shape as the local cursor (Windows; padded to the system cursor size so Windows doesn't stretch it), or the plain arrow with `-RemoteCursorShape=0` / the F8 menu |
 | Other           | Password files (`vncpasswd` format), reverse connections, server history |
 
 Not supported yet: H.264, RSA-AES/DH/MSLogonII security, audio,

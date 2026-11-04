@@ -63,9 +63,9 @@ PARAMS = [
           "keeping the aspect ratio; Lanczos-3 when shrinking, bicubic "
           "when enlarging) or Off (1:1 with scrollbars). SagatVNC only; "
           "needs Pillow"),
-    Param("RemoteCursorShape", bool, False,
-          "Show the cursor shape the server sends instead of the local "
-          "system arrow (Windows only). The server is always asked for "
+    Param("RemoteCursorShape", bool, True,
+          "Show the cursor shape the server sends (Windows only); off: "
+          "always the local system arrow. The server is always asked for "
           "the shape, so it never draws its own cursor into the desktop "
           "image. SagatVNC only"),
     Param("AlwaysCursor", bool, False,

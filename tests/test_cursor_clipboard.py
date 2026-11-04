@@ -42,6 +42,45 @@ class CurFileTest(unittest.TestCase):
         self.assertEqual(mask[4], 0b01000000)        # row 0: px 1 clear
 
 
+class FitToCanvasTest(unittest.TestCase):
+    """Windows stretches loaded cursors to SM_CXCURSOR; we pad instead."""
+
+    def test_pad_keeps_pixels_and_hotspot(self):
+        from sagatvnc.viewer.cursor import fit_to_canvas
+        rgba = bytes(range(2 * 3 * 4))                 # 2x3 cursor
+        w, h, hx, hy, out = fit_to_canvas(2, 3, 1, 2, rgba, (4, 4))
+        self.assertEqual((w, h, hx, hy), (4, 4, 1, 2))
+        self.assertEqual(out[0:8], rgba[0:8])          # row 0
+        self.assertEqual(out[16:24], rgba[8:16])       # row 1
+        self.assertEqual(out[8:16], b"\0" * 8)         # transparent pad
+
+    def test_too_big_without_pillow_is_cropped(self):
+        from sagatvnc.viewer import cursor
+        saved, cursor.Image = cursor.Image, None
+        try:
+            rgba = bytes(range(256)) * 1               # 8x8 cursor
+            w, h, hx, hy, out = cursor.fit_to_canvas(8, 8, 7, 7, rgba,
+                                                     (4, 4))
+        finally:
+            cursor.Image = saved
+        self.assertEqual((w, h, hx, hy), (4, 4, 3, 3))
+        self.assertEqual(out[16:32], rgba[32:48])      # row 1, cols 0-3
+
+    def test_dpi_alias_in_tigervnc_file(self):
+        import os
+        import tempfile
+        from sagatvnc.viewer import configfile
+        from sagatvnc.viewer.parameters import Options
+        fd, path = tempfile.mkstemp(suffix=".tigervnc")
+        os.write(fd, b"TigerVNC Configuration file Version 1.0\n\n"
+                     b"ServerName=host:1\nDPI=150\n")
+        os.close(fd)
+        self.addCleanup(os.remove, path)
+        opts = Options()
+        self.assertEqual(configfile.load(path, opts), "host:1")
+        self.assertEqual(opts.remotedpiscale, 150)
+
+
 class Session(unittest.TestCase):
     def start(self, **opts):
         a, b = socket.socketpair()

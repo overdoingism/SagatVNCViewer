@@ -57,8 +57,15 @@ Deliberate differences from upstream, kept on purpose:
   are refused on pre-3.8 servers, as in `setPF()`.
 - F8 popup menu (`MenuKey`) instead of upstream's ShortcutModifiers combos,
   which have no Windows counterpart. The owner chose this.
-- The local cursor is the system arrow by default (owner's choice). We
-  still advertise every cursor encoding so the server never draws one.
+- The cursor: the server's shape by default, togglable to the plain
+  arrow (F8 menu, `RemoteCursorShape`). Every cursor encoding is always
+  advertised, so the server never draws a cursor into the image. Windows'
+  LoadCursorFromFile (Tk "@file") stretches cursors to SM_CXCURSOR, which
+  distorts them and moves the hotspot. `cursor.fit_to_canvas` pads them to
+  exactly that size instead.
+- Pointer events only over the desktop image (upstream's Viewport is only
+  that big): nothing over the black bars unless dragging, and one clamped
+  "leave" event when the pointer crosses out.
 - The clipboard is fetched as soon as the server notifies, but only while
   focused (`Viewport::handleClipboardAnnounce`). That is upstream
   behaviour, not a laziness hack.

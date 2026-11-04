@@ -76,15 +76,46 @@ def scale_cursor(w, h, hot_x, hot_y, rgba, factor):
             min(nh - 1, round(hot_y * nh / h)), im.tobytes())
 
 
+def system_cursor_size():
+    """The size Windows stretches every loaded cursor to (SM_CXCURSOR /
+    SM_CYCURSOR, which already include the DPI scale for a DPI-aware
+    process).  LoadCursorFromFile - what Tk's "@file" uses - always loads
+    at this size, so a 20x20 cursor becomes 48x48 at 175% with its hotspot
+    moved.  Returns None where that doesn't apply."""
+    if not CUSTOM_SUPPORTED:
+        return None
+    import ctypes
+    w = ctypes.windll.user32.GetSystemMetrics(13)
+    h = ctypes.windll.user32.GetSystemMetrics(14)
+    return (w, h) if w > 0 and h > 0 else None
+
+
+def fit_to_canvas(w, h, hot_x, hot_y, rgba, size):
+    """Put the cursor in the top-left of a transparent ``size`` canvas so
+    Windows loads it without stretching; shrink it first if too big."""
+    cw, ch = size
+    if w > cw or h > ch:
+        factor = min(cw / w, ch / h)
+        w, h, hot_x, hot_y, rgba = scale_cursor(w, h, hot_x, hot_y, rgba,
+                                                factor)
+    # Without Pillow it may still be too big: crop (source stride is w)
+    cpw, cph = min(w, cw), min(h, ch)
+    out = bytearray(cw * ch * 4)
+    for y in range(cph):
+        out[y * cw * 4:y * cw * 4 + cpw * 4] = \
+            rgba[y * w * 4:y * w * 4 + cpw * 4]
+    return cw, ch, min(hot_x, cw - 1), min(hot_y, ch - 1), bytes(out)
+
+
 class CursorManager:
     """Keeps the canvas cursor in step with the server's cursor shape."""
 
     def __init__(self, widget, always_cursor=False, cursor_type="dot",
-                 remote_shape=False):
+                 remote_shape=True):
         self.widget = widget
-        # Default: always the local system arrow.  The server is still
-        # asked for its cursor shape - that is what stops it drawing a
-        # (possibly misplaced) cursor into the desktop image.
+        # With remote_shape off, always the local system arrow.  The server
+        # is asked for its cursor shape either way - that is what stops it
+        # drawing a (possibly misplaced) cursor into the desktop image.
         self.remote_shape = remote_shape
         self.always_cursor = always_cursor
         self.fallback = "dot" if cursor_type.lower() == "dot" else "arrow"
@@ -93,6 +124,8 @@ class CursorManager:
         self.serial = 0
         self.dir = None
         self.current_file = None
+        self.current_spec = None
+        self.inside = True
         self.apply()
 
     def _tempdir(self):
@@ -111,33 +144,62 @@ class CursorManager:
             if self.shape:
                 self.apply()
 
+    def show(self):
+        """The pointer is over the desktop: put our cursor back, without
+        rebuilding it."""
+        self.inside = True
+        if self.current_spec:
+            self.widget.configure(cursor=self.current_spec)
+        else:
+            self.apply()
+
+    def outside(self):
+        """The pointer is over the black bars: the normal arrow there.
+        Shapes arriving meanwhile are kept for when it comes back."""
+        self.inside = False
+        self.widget.configure(cursor="arrow")
+
+    def _set(self, spec):
+        self.current_spec = spec
+        if self.inside:
+            self.widget.configure(cursor=spec)
+
+    def set_remote_shape(self, on):
+        self.remote_shape = on
+        self.apply()
+
     def apply(self):
         if not self.remote_shape:
-            self.widget.configure(cursor="arrow")
+            self._set("arrow")
             return
         if self.shape is None:
-            # No shape from the server (yet): a plain local cursor
-            self.widget.configure(cursor=self.fallback)
+            # No shape from the server yet.  (Upstream shows a blank
+            # cursor here; an arrow is less surprising and servers send a
+            # shape straight away anyway.)
+            self._set("arrow")
             return
         w, h, hx, hy, rgba = self.shape
         blank = w == 0 or h == 0 or not any(rgba[3::4])
         if blank:
             # The server hides its cursor (e.g. while typing)
-            self.widget.configure(cursor=self.fallback if self.always_cursor
-                                  else "none")
+            self._set(self.fallback if self.always_cursor else "none")
             return
         if not CUSTOM_SUPPORTED:
-            self.widget.configure(cursor="arrow")
+            self._set("arrow")
             return
+        # Same size relative to the desktop as on the remote screen
         w, h, hx, hy, rgba = scale_cursor(w, h, hx, hy, rgba, self.scale)
+        size = system_cursor_size()
+        if size:
+            w, h, hx, hy, rgba = fit_to_canvas(w, h, hx, hy, rgba, size)
         self.serial += 1
         path = os.path.join(self._tempdir(), "c%d.cur" % self.serial)
         with open(path, "wb") as f:
             f.write(make_cur(w, h, hx, hy, rgba))
         try:
-            self.widget.configure(cursor="@" + path.replace("\\", "/"))
+            self._set("@" + path.replace("\\", "/"))
         except Exception:
-            self.widget.configure(cursor="arrow")
+            self._set("arrow")
             return
         old, self.current_file = self.current_file, path
         if old:
