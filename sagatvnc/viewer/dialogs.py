@@ -16,6 +16,7 @@ from tkinter import font as tkfont, ttk
 
 from .. import __version__
 from . import icon
+from .win32 import bring_to_front
 
 ABOUT_TEXT = (
     "SagatVNC Viewer %s\n\n"
@@ -72,6 +73,7 @@ class _Modal(tk.Toplevel):
         self.title(title)
         self.resizable(False, False)
         self.result = None
+        self.initial_focus = None    # the field the caret starts in
         self.protocol("WM_DELETE_WINDOW", self.cancel)
         self.bind("<Escape>", lambda e: self.cancel())
         self.bind("<Return>", lambda e: self.ok())
@@ -130,10 +132,30 @@ class _Modal(tk.Toplevel):
         self.lift()
         self.attributes("-topmost", True)
         self.after(200, lambda: self.attributes("-topmost", False))
+        # Focus only sticks once the window is really on screen; before,
+        # Tk and Windows may hand it to the toplevel itself, leaving no
+        # caret in the text field
+        self.wait_visibility()
+        bring_to_front(self)
         self.grab_set()
-        self.focus_force()
+        self._focus_initial()
+        # Windows may activate the window a moment later and reset focus
+        self.after(150, self._focus_initial)
         self.wait_window()
         return self.result
+
+    def _focus_initial(self):
+        """Put the caret in the initial field (not on the toplevel, which
+        is what focus_force() on the dialog itself did)."""
+        widget = self.initial_focus or self
+        try:
+            if not self.winfo_exists():
+                return
+            widget.focus_force()
+            if isinstance(widget, (ttk.Entry, tk.Entry)):
+                widget.icursor("end")
+        except tk.TclError:
+            pass
 
     def ok(self):
         self.destroy()
@@ -180,8 +202,8 @@ class ServerDialog(_Modal):
         self.entry.grid(row=0, column=1, sticky="we", ipady=3)
         self.button_bar([("Cancel", self.cancel), ("Connect", self.ok)],
                         left=[("About...", lambda: show_about(self))])
-        self.entry.focus_set()
         self.entry.select_range(0, "end")
+        self.initial_focus = self.entry
 
     def ok(self):
         self.result = self.var.get().strip()
@@ -229,7 +251,10 @@ class AuthDialog(_Modal):
                   "\u25cf  This connection is not encrypted").grid(
             row=row, column=0, columnspan=2, sticky="w", pady=(PAD - 4, 0))
         self.button_bar([("Cancel", self.cancel), ("OK", self.ok)])
-        (ue if need_username else pe).focus_set()
+        # The username field only when it still needs typing (it is
+        # prefilled with the local user name); otherwise the password
+        self.initial_focus = ue if need_username and \
+            not self.user.get() else pe
         self.need_username = need_username
 
     def ok(self):

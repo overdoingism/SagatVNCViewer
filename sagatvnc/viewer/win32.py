@@ -21,6 +21,48 @@ def _toplevel_hwnd(widget):
     return user32.GetAncestor(ctypes.c_void_p(widget.winfo_id()), GA_ROOT)
 
 
+def bring_to_front(widget):
+    """Make widget's toplevel the foreground window, so typing goes to it.
+
+    Windows refuses SetForegroundWindow to a process that didn't get the
+    last input, e.g. when the password dialog appears a few seconds after
+    start and the user has clicked elsewhere meanwhile; the dialog then
+    only flashes in the taskbar.  Attaching to the foreground thread's
+    input for the call is the usual way around that.  Returns True if the
+    window is in front afterwards.
+    """
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.c_void_p]
+    user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD,
+                                         wintypes.BOOL]
+    for name in ("SetForegroundWindow", "BringWindowToTop", "SetFocus"):
+        getattr(user32, name).argtypes = [wintypes.HWND]
+    hwnd = _toplevel_hwnd(widget)
+    if not hwnd:
+        return False
+    fg = user32.GetForegroundWindow()
+    if fg == hwnd:
+        return True
+    ours = kernel32.GetCurrentThreadId()
+    theirs = user32.GetWindowThreadProcessId(fg, None) if fg else 0
+    attached = bool(theirs and theirs != ours and
+                    user32.AttachThreadInput(theirs, ours, True))
+    try:
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+    finally:
+        if attached:
+            user32.AttachThreadInput(theirs, ours, False)
+    return user32.GetForegroundWindow() == hwnd
+
+
 def set_local_ime(widget, enabled):
     """Enable or disable the local input method for widget's window.
 
