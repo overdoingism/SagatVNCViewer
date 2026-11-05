@@ -89,7 +89,7 @@ def load(path, opts, log=lambda msg: None):
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         text = raw.decode("latin-1")
-    if text.startswith("﻿"):
+    if text.startswith("\ufeff"):
         text = text[1:]
     lines = text.splitlines()
     if not lines or not lines[0].startswith(IDENTIFIER_STRING):
@@ -125,8 +125,45 @@ def load(path, opts, log=lambda msg: None):
     return server
 
 
+def _foreign_lines(path):
+    """Lines of an existing .tigervnc file that this port doesn't read:
+    parameters it doesn't implement (e.g. TigerVNC-only ones) and
+    comments.  Saving over the file keeps them, so a file shared with
+    TigerVNC loses nothing.  Not in upstream, which only knows its own
+    parameters and rewrites the whole file."""
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except OSError:
+        return []
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1")
+    if text.startswith("\ufeff"):
+        text = text[1:]
+    lines = text.splitlines()
+    if not lines or not lines[0].startswith(IDENTIFIER_STRING):
+        return []
+    keep = []
+    for line in lines[1:]:
+        if line.startswith("#"):
+            keep.append(line)
+            continue
+        name, eq, _ = line.partition("=")
+        name = name.strip()
+        if eq and name.lower() != "servername" and _lookup(name) is None:
+            keep.append(line)
+    return keep
+
+
 def save(path, server, opts):
-    """Write ``server`` and non-default parameters as a .tigervnc file."""
+    """Write ``server`` and non-default parameters as a .tigervnc file,
+    like saveViewerParameters() (which also skips defaults).
+
+    Unknown parameters and comments already in ``path`` are kept.  The
+    file is replaced atomically, so a failed save leaves the old one.
+    """
     from .parameters import PARAMS
     lines = [IDENTIFIER_STRING, "", "ServerName=%s" % encode_value(server)]
     for p in PARAMS:
@@ -138,5 +175,16 @@ def save(path, server, opts):
         if p.kind is bool:
             value = "1" if value else "0"
         lines.append("%s=%s" % (p.name, encode_value(str(value))))
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write("\n".join(lines) + "\n")
+    lines += _foreign_lines(path)
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(lines) + "\n")
+        os.replace(tmp, path)
+    except OSError as e:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise ConfigFileError("Failed to save \"%s\": %s" %
+                              (path, e.strerror or e))

@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 
 from .. import __version__
 from ..rfb import encodings as enc
@@ -27,7 +27,7 @@ from ..rfb.connection import (Connection, ConnectionOptions,
 from ..rfb.des import deobfuscate_password
 from ..rfb.security import AuthFailure, connect_socket, parse_security_types
 from ..rfb.stream import ConnectionClosed
-from . import dialogs
+from . import configfile, dialogs, icon
 from . import keyboard as kbd
 from .keysyms import NAMED
 from .parameters import config_dir, parse_server
@@ -138,6 +138,12 @@ class ConnectionHandler:
         self.events.put(("resizedone", result))
 
 
+# PreferredEncoding values offered in the F8 menu, as upstream's options
+# dialog (minus H.264, which this port can't decode).  "JPEG" (21) is
+# accepted from files and the command line but, as upstream, not offered.
+ENCODING_CHOICES = ("Tight", "ZRLE", "Hextile", "Raw")
+
+
 # ---------------------------------------------------------------------------
 # The application
 # ---------------------------------------------------------------------------
@@ -146,6 +152,7 @@ class ViewerApp:
         self.opts = options
         self.root = tk.Tk(className="SagatVNC")
         self.root.withdraw()
+        icon.apply(self.root)
         self.root.title("SagatVNC Viewer")
         self.conn = None
         self.handler = None
@@ -211,6 +218,15 @@ class ViewerApp:
         self.colour_var = tk.IntVar(
             value=3 if options.fullcolor else options.lowcolorlevel)
         self.quality_var = tk.IntVar(value=options.qualitylevel)
+        pe = options.preferredencoding.strip().lower()
+        self.encoding_var = tk.StringVar(value=next(
+            (n for n in ENCODING_CHOICES if n.lower() == pe), ""))
+        self.jpeg_var = tk.BooleanVar(value=not options.nojpeg)
+        # -1 = the server's default, else CompressLevel
+        self.compress_var = tk.IntVar(
+            value=options.compresslevel if options.customcompresslevel
+            else -1)
+        self.server_name = options.server or ""
 
     # -- history ------------------------------------------------------------
     def _history_path(self):
@@ -251,6 +267,7 @@ class ViewerApp:
                     if not server:
                         return 1
                 self.save_history(server)
+                self.server_name = server
                 self.host, self.port = parse_server(server)
                 log("Connecting to %s port %d" % (self.host, self.port))
                 sock = connect_socket(self.host, self.port)
@@ -686,7 +703,7 @@ class ViewerApp:
         finally:
             fb.lock.release()
 
-    # -- remote resize (DesktopWindow::remoteResize) ---------------------------
+    # -- remote resize (DesktopWindow::remoteResize) -------------------
     def on_configure(self, event):
         # The layout depends on the *canvas* size, and the canvas gets its
         # new size after the toplevel: reacting to the toplevel alone could
@@ -893,7 +910,7 @@ class ViewerApp:
                 self._key_pressed(FAKE_KEY_CODE, key_code, keysym)
                 self._key_released(FAKE_KEY_CODE)
 
-    # -- clipboard ----------------------------------------------------------------
+    # -- clipboard ---------------------------------------------------------
     def flush_pending_clipboard(self):
         """Viewport::flushPendingClipboard(): tell the server about a local
         clipboard change made while we didn't have focus."""
@@ -941,7 +958,7 @@ class ViewerApp:
         self.root.clipboard_clear()
         self.root.clipboard_append(text)
 
-    # -- pointer --------------------------------------------------------------------
+    # -- pointer -----------------------------------------------------------
     def _fb_coords(self, event):
         ox, oy = self.offset
         x = self.canvas.canvasx(event.x) - ox
@@ -1086,7 +1103,8 @@ class ViewerApp:
 
     def on_wheel(self, event):
         self.keyboard.mouse_event()
-        if self.view_only() or not self.conn or not event.delta or                 not self._over_desktop(event):
+        if (self.view_only() or not self.conn or not event.delta or
+                not self._over_desktop(event)):
             return
         # Tk on Windows reports a horizontal wheel (WM_MOUSEHWHEEL) as
         # Shift+wheel.  A Shift that is really held is just Shift + the
@@ -1099,7 +1117,8 @@ class ViewerApp:
 
     def on_x11_wheel(self, event):
         self.keyboard.mouse_event()
-        if self.view_only() or not self.conn or                 not self._over_desktop(event):
+        if (self.view_only() or not self.conn or
+                not self._over_desktop(event)):
             return
         self._wheel_click(event, event.num)
 
@@ -1120,7 +1139,7 @@ class ViewerApp:
             return
         self.canvas.event_generate("<Motion>", warp=True, x=cx, y=cy)
 
-    # -- F8 menu ---------------------------------------------------------------
+    # -- F8 menu -----------------------------------------------------------
     def build_menu(self):
         m = tk.Menu(self.root, tearoff=False)
         m.add_command(label="Disconnect", command=self.quit)
@@ -1144,24 +1163,56 @@ class ViewerApp:
                              command=self.start_calibration)
         m.add_cascade(label="Remote DPI compensation", menu=dpi_menu)
         m.add_separator()
-        m.add_checkbutton(label="Auto select (color and quality)",
+        # The options dialog's Compression tab as menus.  Upstream greys
+        # out encoding, color level and quality while AutoSelect is on; in
+        # a menu, picking one of them switches AutoSelect off instead.
+        m.add_checkbutton(label="Auto select (encoding, color, quality)",
                           variable=self.autoselect_var,
                           command=self._picture_changed)
+        manual = lambda: self._picture_changed(manual=True)  # noqa: E731
+        encoding_menu = tk.Menu(m, tearoff=False)
+        for name, note in zip(ENCODING_CHOICES,
+                              ("  (zlib + JPEG, recommended)",
+                               "  (zlib, lossless)", "  (no zlib)",
+                               "  (uncompressed)")):
+            encoding_menu.add_radiobutton(label=name + note, value=name,
+                                          variable=self.encoding_var,
+                                          command=manual)
+        m.add_cascade(label="Preferred encoding", menu=encoding_menu)
         colour_menu = tk.Menu(m, tearoff=False)
-        for value, label in ((3, "Full color"), (2, "Medium (256 colors)"),
-                             (1, "Low (64 colors)"), (0, "Very low (8 colors)")):
+        for value, label in ((3, "Full color"),
+                             (2, "Medium (256 colors)"),
+                             (1, "Low (64 colors)"),
+                             (0, "Very low (8 colors)")):
             colour_menu.add_radiobutton(label=label, value=value,
                                         variable=self.colour_var,
-                                        command=self._picture_changed)
+                                        command=manual)
         m.add_cascade(label="Color level", menu=colour_menu)
+        from ..rfb.decoders import JPEG_AVAILABLE
         quality_menu = tk.Menu(m, tearoff=False)
+        quality_menu.add_checkbutton(
+            label="Allow JPEG compression (lossy)", variable=self.jpeg_var,
+            command=self._picture_changed,
+            state="normal" if JPEG_AVAILABLE else "disabled")
+        quality_menu.add_separator()
         for q in range(9, -1, -1):
             quality_menu.add_radiobutton(
-                label="%d%s" % (q, {9: " (best)", 0: " (smallest)"}.get(q, "")),
-                value=q, variable=self.quality_var,
+                label="Quality %d%s" % (q, {9: " (best)",
+                                            0: " (smallest)"}.get(q, "")),
+                value=q, variable=self.quality_var, command=manual)
+        m.add_cascade(label="JPEG", menu=quality_menu)
+        compress_menu = tk.Menu(m, tearoff=False)
+        compress_menu.add_radiobutton(label="Server default", value=-1,
+                                      variable=self.compress_var,
+                                      command=self._picture_changed)
+        compress_menu.add_separator()
+        for c in range(10):
+            compress_menu.add_radiobutton(
+                label="%d%s" % (c, {0: " (fastest)",
+                                    9: " (smallest)"}.get(c, "")),
+                value=c, variable=self.compress_var,
                 command=self._picture_changed)
-        m.add_cascade(label="JPEG quality", menu=quality_menu)
-        self.picture_menus = (colour_menu, quality_menu)
+        m.add_cascade(label="Compression level", menu=compress_menu)
         m.add_checkbutton(label="Remote cursor shape",
                           variable=self.remote_cursor_var,
                           command=lambda: self.cursors.set_remote_shape(
@@ -1187,6 +1238,9 @@ class ViewerApp:
         m.add_checkbutton(label="View only", variable=self.viewonly_var,
                           command=self._view_only_changed)
         m.add_separator()
+        m.add_command(label="Save settings", command=self.save_settings)
+        m.add_command(label="Save settings as...",
+                      command=self.save_settings_as)
         m.add_command(label="Connection info...", command=self.show_info)
         m.add_command(label="About SagatVNC Viewer...",
                       command=lambda: dialogs.show_about(self.root))
@@ -1219,21 +1273,122 @@ class ViewerApp:
         else:
             self._key_released(code)
 
-    def _picture_changed(self):
-        """Apply color level / JPEG quality / AutoSelect from the menu."""
+    def _picture_changed(self, manual=False):
+        """Apply the Compression settings from the menu, like
+        CConn::handleOptions().  ``manual``: an encoding, color level or
+        quality was picked, which only means something without
+        AutoSelect."""
+        if manual and self.autoselect_var.get():
+            self.autoselect_var.set(False)
+            log("Auto select switched off by a manual choice")
         auto = self.autoselect_var.get()
         colour = self.colour_var.get()
+        compress = self.compress_var.get()
+        changes = dict(
+            auto_select=auto, full_colour=colour == 3,
+            low_colour_level=min(colour, 2),
+            quality_level=self.quality_var.get(),
+            no_jpeg=not self.jpeg_var.get(),
+            custom_compress_level=compress >= 0,
+            compress_level=max(0, compress))
+        name = self.encoding_var.get()
+        if name:
+            changes["preferred_encoding"] = enc.NAMES[name]
         if self.conn:
-            self.conn.change_settings(
-                auto_select=auto, full_colour=colour == 3,
-                low_colour_level=min(colour, 2),
-                quality_level=self.quality_var.get())
-        log("Picture settings: %s, color %s, JPEG quality %d" %
+            self.conn.change_settings(**changes)
+        log("Picture settings: %s, encoding %s, color %s, JPEG %s, "
+            "compression %s" %
             ("auto select" if auto else "manual",
+             "Tight" if auto else name or self.opts.preferredencoding,
              "full" if colour == 3 else "level %d" % colour,
-             self.quality_var.get()))
+             "quality %d" % self.quality_var.get() if self.jpeg_var.get()
+             else "off",
+             compress if compress >= 0 else "server default"))
 
-    # -- pointer calibration ---------------------------------------------------
+    # -- saving settings (ServerDialog::handleSaveAs) ----------------------
+    def sync_options(self):
+        """Copy what the F8 menu changed back into the parameters, as
+        upstream's menu and options dialog set them (e.g. fullScreen)."""
+        o = self.opts
+        o.fullscreen = bool(self.fullscreen_var.get())
+        o.viewonly = bool(self.viewonly_var.get())
+        o.scaling = "Auto" if self.scaling_var.get() else "Off"
+        o.remotedpiscale = (self.calibrating if self.calibrating is not None
+                            else self.remote_dpi_var.get())
+        o.remotecursorshape = bool(self.remote_cursor_var.get())
+        o.localinputmethod = bool(self.local_ime_var.get())
+        o.autoselect = bool(self.autoselect_var.get())
+        colour = self.colour_var.get()
+        o.fullcolor = colour == 3
+        if colour < 3:
+            o.lowcolorlevel = colour
+        o.qualitylevel = self.quality_var.get()
+        if self.encoding_var.get():
+            o.preferredencoding = self.encoding_var.get()
+        o.nojpeg = not self.jpeg_var.get()
+        compress = self.compress_var.get()
+        o.customcompresslevel = compress >= 0
+        if compress >= 0:
+            o.compresslevel = compress
+
+    def save_settings(self):
+        """Save to the .tigervnc file this session came from; without one,
+        ask where (Save settings as...)."""
+        path = self.opts.config_file
+        if not path:
+            self.save_settings_as()
+            return
+        if self._write_settings(path):
+            self._flash_title("saved to %s" % os.path.basename(path))
+
+    def save_settings_as(self):
+        current = self.opts.config_file
+        if current:
+            folder, name = os.path.split(current)
+        else:
+            folder = os.path.expanduser("~")
+            name = "".join(c if c.isalnum() or c in "-." else "_"
+                           for c in self.server_name or "") or "vncviewer"
+            name += ".tigervnc"
+        # The native dialog asks before overwriting, like upstream's
+        path = filedialog.asksaveasfilename(
+            parent=self.root, title="Save the TigerVNC configuration to file",
+            initialdir=folder, initialfile=name,
+            defaultextension=".tigervnc",
+            filetypes=[("TigerVNC configuration", "*.tigervnc"),
+                       ("All files", "*.*")])
+        if not path:
+            return
+        path = os.path.abspath(path)
+        if self._write_settings(path):
+            self.opts.config_file = path
+            self._flash_title("saved to %s" % os.path.basename(path))
+
+    def _write_settings(self, path):
+        self.sync_options()
+        try:
+            configfile.save(path, self.server_name, self.opts)
+        except configfile.ConfigFileError as e:
+            log(str(e))
+            messagebox.showerror(
+                "SagatVNC Viewer", "Unable to save the specified "
+                "configuration file:\n\n%s" % e, parent=self.root)
+            return False
+        log("Saved settings to %s" % path)
+        return True
+
+    def _flash_title(self, note, ms=2500):
+        """Confirm a save in the title bar instead of a dialog."""
+        title = self.root.title()
+        flashed = "%s (%s)" % (title, note)
+        self.root.title(flashed)
+
+        def restore():
+            if self.root.title() == flashed:   # not renamed meanwhile
+                self.root.title(title)
+        self.root.after(ms, restore)
+
+    # -- pointer calibration -----------------------------------------------
     def start_calibration(self):
         """Measure how far a non-DPI-aware server moves the cursor.
 
@@ -1346,6 +1501,7 @@ class ViewerApp:
         self.fullscreen_var.set(on)
         self.root.attributes("-fullscreen", on)
         self.root.update_idletasks()
+        icon.set_window_icon(self.root)     # Tk rebuilt the outer window
         self.layout()
 
     def resize_to_session(self):
@@ -1393,6 +1549,7 @@ class ViewerApp:
 def main(options):
     from .dpi import enable_dpi_awareness
     awareness = enable_dpi_awareness()
+    icon.set_app_id()
     if awareness:
         log("DPI awareness: %s" % awareness)
     log("SagatVNC Viewer %s (Python %s, Tk %s)" %

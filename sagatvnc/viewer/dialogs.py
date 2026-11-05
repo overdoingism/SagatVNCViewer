@@ -12,9 +12,10 @@
 
 import os
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import ttk
 
 from .. import __version__
+from . import icon
 
 ABOUT_TEXT = (
     "SagatVNC Viewer %s\n\n"
@@ -28,7 +29,7 @@ ABOUT_TEXT = (
 
 
 def show_about(parent):
-    messagebox.showinfo("About SagatVNC Viewer", ABOUT_TEXT, parent=parent)
+    AboutDialog(parent).run()
 
 
 class _Modal(tk.Toplevel):
@@ -63,6 +64,26 @@ class _Modal(tk.Toplevel):
     def cancel(self):
         self.result = None
         self.destroy()
+
+
+class AboutDialog(_Modal):
+    """about_vncviewer(), with our logo instead of a plain message box."""
+
+    def __init__(self, parent):
+        super().__init__(parent, "About SagatVNC Viewer")
+        frame = ttk.Frame(self, padding=16)
+        frame.pack(fill="both", expand=True)
+        try:
+            self.logo = icon.photo(self, 128)
+            ttk.Label(frame, image=self.logo).grid(row=0, column=0,
+                                                   sticky="n", padx=(0, 16))
+        except tk.TclError:
+            self.logo = None
+        ttk.Label(frame, text=ABOUT_TEXT, justify="left").grid(
+            row=0, column=1, sticky="nw")
+        ok = ttk.Button(frame, text="Close", command=self.ok)
+        ok.grid(row=1, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        ok.focus_set()
 
 
 class ServerDialog(_Modal):

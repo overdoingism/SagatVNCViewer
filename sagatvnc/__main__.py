@@ -53,8 +53,11 @@ def _show_error(title, message):
         try:
             import tkinter as tk
             from tkinter import messagebox
+            from .viewer import icon
+            icon.set_app_id()
             root = tk.Tk()
             root.withdraw()
+            icon.apply(root)
             messagebox.showerror(title, message, parent=root)
             root.destroy()
         except Exception:

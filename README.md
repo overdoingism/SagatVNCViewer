@@ -105,8 +105,32 @@ desktop. Turn it back on with *Local input method* in the F8 menu, or
 `-LocalInputMethod`.
 
 Press **F8** (`-MenuKey`) inside the session to open the popup menu. It has
-full screen, Ctrl/Alt toggles, Send Ctrl-Alt-Del, refresh, view-only,
-connection info and disconnect.
+full screen, scaling, the picture settings (auto select, preferred
+encoding, color level, JPEG, compression level), Ctrl/Alt toggles, Send
+Ctrl-Alt-Del, refresh, view-only, connection info and disconnect.
+
+*Save settings* writes what you changed in the menu back to the
+`.tigervnc` file the session was opened from (or asks where, if there was
+none). *Save settings as...* writes a new file. Parameters SagatVNC does
+not know (TigerVNC-only ones) and comments in an existing file are kept.
+Passwords are never saved.
+
+### Which encoding?
+
+Leave *Auto select* on unless you have a reason: like TigerVNC, it uses
+Tight and picks color depth and JPEG quality from the measured bandwidth.
+Picking an encoding, color level or quality in the menu turns it off.
+
+| Encoding | Compression | Good for | Costs |
+|----------|-------------|----------|-------|
+| Tight    | zlib + palette/gradient filters, JPEG for photo-like areas | almost everything, especially slow links and video/photos | JPEG is lossy (turn it off under *JPEG*); most server CPU |
+| ZRLE     | zlib + run-length on 64x64 tiles, lossless | text and UI on medium links, exact colors | no JPEG, so photos and video are big; this port's decoder is Python, slower than Tight's |
+| Hextile  | 16x16 tiles of rectangles, no zlib | fast LAN with an old or weak server | 5-50x the data of Tight/ZRLE; slow to decode here |
+| Raw      | none | the same machine or a 1 Gbit+ LAN | a 2560x1600 frame is 16 MB |
+
+*Compression level* (zlib, 0 fastest to 9 smallest) applies to Tight and
+ZRLE and trades server CPU for bandwidth; *Server default* leaves it to
+the server. CopyRect (moved windows, scrolling) is always used.
 
 ## What is supported
 
@@ -120,7 +144,7 @@ connection info and disconnect.
 | Input           | Keyboard tracked per physical key, Windows AltGr merging, QEMU scan codes, lock-key LED sync; mouse, wheel (one click per event), pointer warps |
 | Clipboard       | Extended Clipboard (UTF-8, so Chinese/emoji survive) both ways; classic Latin-1 cut text for older servers |
 | Cursor          | The server's cursor shape as the local cursor (Windows; padded to the system cursor size so Windows doesn't stretch it), or the plain arrow with `-RemoteCursorShape=0` / the F8 menu |
-| Other           | Password files (`vncpasswd` format), reverse connections, server history |
+| Other           | Password files (`vncpasswd` format), reverse connections, server history, save settings to `.tigervnc` from the F8 menu |
 
 Not supported yet: H.264, RSA-AES/DH/MSLogonII security, audio,
 extended mouse buttons, touch/gestures, keyboard grab and the options
