@@ -105,6 +105,44 @@ class EncodingChoiceTest(Base):
                          enc.TIGHT)
 
 
+class TitleStatsTest(Base):
+    def test_format_rate(self):
+        from sagatvnc.viewer.app import format_rate
+        self.assertEqual(format_rate(0), "0.0 KiB/s")
+        self.assertEqual(format_rate(1536), "1.5 KiB/s")
+        self.assertEqual(format_rate(1024 * 1024 - 1), "1024.0 KiB/s")
+        self.assertEqual(format_rate(3 * 1024 * 1024), "3.0 MiB/s")
+
+    def test_update_encodings_summary(self):
+        self.session()
+        self.assertEqual(self.conn.last_update_encodings, "")
+        f = self.server
+        sent = self.conn.stream.bytes_sent
+        self.assertGreater(sent, 0)          # SetEncodings, update request
+        f.update([f.rect(0, 0, 4, 4, enc.TIGHT, bytes([0x80, 1, 2, 3])),
+                  f.rect(4, 0, 4, 4, enc.RAW, bytes(64)),
+                  f.rect(8, 0, 4, 4, enc.COPYRECT, bytes(4))])
+        f.sync()
+        self.assertEqual(self.conn.last_update_encodings, "Tight/Raw")
+        f.update([f.rect(8, 0, 4, 4, enc.COPYRECT, bytes(4))])
+        f.sync()
+        self.assertEqual(self.conn.last_update_encodings, "CopyRect")
+        # An update that draws nothing keeps the last summary
+        f.update([])
+        f.sync()
+        self.assertEqual(self.conn.last_update_encodings, "CopyRect")
+        self.assertGreater(self.conn.stream.bytes_sent, sent)
+
+    def test_rust_switch(self):
+        from sagatvnc.rfb import accel
+        was = accel.lib
+        self.addCleanup(accel.set_enabled, was is not None)
+        accel.set_enabled(False)
+        self.assertIsNone(accel.lib)
+        accel.set_enabled(True)
+        self.assertEqual(accel.lib is not None, accel.available())
+
+
 class IconTest(unittest.TestCase):
     def test_pngs_have_their_sizes(self):
         for size, data in icon_data.PNGS.items():

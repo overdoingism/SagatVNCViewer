@@ -57,7 +57,11 @@ PARAMS = [
           "e.g. 1024x768+0+0)"),
     Param("RemoteResize", bool, True,
           "Dynamically resize the remote desktop size as the size of the "
-          "local client window changes"),
+          "local client window changes (does not work with all servers; "
+          "off: Scaling decides)"),
+    Param("TitleStats", bool, True,
+          "Show live traffic (UP:/DL:), the remote size, encoding and "
+          "color depth in the title bar. SagatVNC only"),
     Param("Scaling", str, "Auto",
           "Scale the remote desktop to the window: Auto (fit the window, "
           "keeping the aspect ratio; Lanczos-3 when shrinking, bicubic "

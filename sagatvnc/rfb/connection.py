@@ -124,6 +124,9 @@ class Connection:
         self.decoders = make_decoders()
         self.closed = False
         self.last_encoding = None
+        # What the last update that drew anything used, e.g. "Tight+JPEG"
+        # or "ZRLE/Raw" (for the title bar)
+        self.last_update_encodings = ""
         self.session_start = None
         self.update_count = 0
 
@@ -416,6 +419,7 @@ class Connection:
         count = s.u16()
         self._framebuffer_update_start(s.position - 4)
         damage = []
+        used = []
         for _ in range(count):
             x, y, w, h = struct.unpack(">HHHH", s.read(8))
             encoding = s.s32()
@@ -438,6 +442,18 @@ class Connection:
                 except DecodeError as e:
                     raise ProtocolError(str(e))
             damage.append((x, y, w, h))
+            name = enc.encoding_name(encoding)
+            if encoding == enc.TIGHT and decoder.last_jpeg:
+                name = "Tight+JPEG"
+            if name not in used:
+                used.append(name)
+        if used:
+            # Tight+JPEG covers Tight; CopyRect only if nothing else
+            if "Tight+JPEG" in used and "Tight" in used:
+                used.remove("Tight")
+            if len(used) > 1 and "CopyRect" in used:
+                used.remove("CopyRect")
+            self.last_update_encodings = "/".join(used)
         self.handler.framebuffer_updated(damage)
         self._framebuffer_update_end()
 

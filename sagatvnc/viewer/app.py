@@ -139,6 +139,16 @@ class ConnectionHandler:
         self.events.put(("resizedone", result))
 
 
+STATS_MS = 1000        # title bar statistics refresh
+
+
+def format_rate(bytes_per_second):
+    """Bytes per second as KiB/s or MiB/s, one decimal."""
+    if bytes_per_second >= 1024 * 1024:
+        return "%.1f MiB/s" % (bytes_per_second / (1024 * 1024))
+    return "%.1f KiB/s" % (bytes_per_second / 1024)
+
+
 # PreferredEncoding values offered in the F8 menu, as upstream's options
 # dialog (minus H.264, which this port can't decode).  "JPEG" (21) is
 # accepted from files and the command line but, as upstream, not offered.
@@ -200,6 +210,18 @@ class ViewerApp:
             log("Pillow is not installed: scaling to the window is off "
                 "(pip install pillow)")
         self.scaling_var = tk.BooleanVar(value=scaling == "auto")
+        self.remote_resize_var = tk.BooleanVar(
+            value=bool(options.remoteresize))
+        # F8 "When the window is resized": both settings in one choice
+        self.resize_mode_var = tk.StringVar(
+            value="remote" if options.remoteresize else
+            "scale" if scaling == "auto" else "scroll")
+        self.title_stats_var = tk.BooleanVar(value=bool(options.titlestats))
+        self.rust_var = tk.BooleanVar(value=accel.lib is not None)
+        self.desktop_name = ""
+        self.title_note = None          # (text, until) after a save
+        self.traffic = None             # (time, sent, received)
+        self.traffic_text = ""
         dpi = options.remotedpiscale
         if not 50 <= dpi <= 500:
             log("RemoteDpiScale %d out of range, using 100" % dpi)
@@ -502,10 +524,48 @@ class ViewerApp:
 
     # -- desktop window ------------------------------------------------------
     def set_title(self, name):
-        self.root.title("%s - SagatVNC Viewer" % name)
+        self.desktop_name = name
+        self.update_title()
+
+    def update_title(self):
+        """"<desktop> - SagatVNC Viewer", then the live statistics:
+        UP:/DL: traffic, then size, encoding and color depth run together
+        (e.g. "2560x1600 Tight+JPEG 24bit")."""
+        parts = ["%s - SagatVNC Viewer" % self.desktop_name]
+        if self.title_stats_var.get() and self.conn and self.conn.fb:
+            c = self.conn
+            info = "%dx%d" % (c.fb.width, c.fb.height)
+            if c.last_update_encodings:
+                info += " " + c.last_update_encodings
+            info += " %dbit" % c.pf.depth
+            parts += [self.traffic_text, info]
+        if self.title_note and time.monotonic() < self.title_note[1]:
+            parts.append("(%s)" % self.title_note[0])
+        title = "   ".join(p for p in parts if p)
+        if self.root.title() != title:
+            self.root.title(title)
+
+    def _tick_stats(self):
+        """Once a second: traffic since the last tick, then the title."""
+        conn = self.conn
+        if conn is None:
+            return
+        now = time.monotonic()
+        sent, received = conn.stream.bytes_sent, conn.stream.bytes_received
+        if self.traffic:
+            dt = max(1e-3, now - self.traffic[0])
+            self.traffic_text = "UP: %s DL: %s" % (
+                format_rate((sent - self.traffic[1]) / dt),
+                format_rate((received - self.traffic[2]) / dt))
+        self.traffic = (now, sent, received)
+        self.update_title()
+        self.root.after(STATS_MS, self._tick_stats)
 
     def create_desktop(self, width, height, name):
+        first = self.traffic is None
         self.set_title(name)
+        if first:
+            self._tick_stats()
         # Like TigerVNC, only send the clipboard when it changes after the
         # connection is made, never whatever happened to be in it before.
         # Some servers (winvnc on the secure login desktop) can't take
@@ -729,7 +789,7 @@ class ViewerApp:
             self.root.after_cancel(self.resize_job)
             self.resize_job = None
         conn = self.conn
-        if self.view_only() or not self.opts.remoteresize:
+        if self.view_only() or not self.remote_resize_var.get():
             return
         if not self.window_ready:
             return            # _wait_for_window() calls us when it is
@@ -1142,90 +1202,115 @@ class ViewerApp:
 
     # -- F8 menu -----------------------------------------------------------
     def build_menu(self):
+        """The F8 menu (DesktopWindow's popup menu, plus what upstream
+        has in its options dialog: picture and input settings)."""
         m = tk.Menu(self.root, tearoff=False)
+
+        def submenu(label):
+            sub = tk.Menu(m, tearoff=False)
+            m.add_cascade(label=label, menu=sub)
+            return sub
+
         m.add_command(label="Disconnect", command=self.quit)
         m.add_separator()
+
+        # -- window
         m.add_checkbutton(label="Full screen", variable=self.fullscreen_var,
                           command=lambda: self.set_fullscreen(
                               self.fullscreen_var.get()))
         m.add_command(label="Resize window to session",
                       command=self.resize_to_session)
-        m.add_checkbutton(label="Scale to window", variable=self.scaling_var,
-                          command=self._scaling_changed,
-                          state="normal" if Scaler.available else "disabled")
-        dpi_menu = tk.Menu(m, tearoff=False)
+        sub = submenu("When the window is resized")
+        for value, label in (
+                ("remote", "Change the remote resolution"),
+                ("scale", "Scale the picture"),
+                ("scroll", "Keep 1:1, show scrollbars")):
+            sub.add_radiobutton(
+                label=label, value=value, variable=self.resize_mode_var,
+                command=self._resize_mode_changed,
+                state="disabled" if value == "scale" and
+                not Scaler.available else "normal")
+        sub = submenu("Remote DPI compensation")
         for pct in (100, 125, 150, 175, 200, 225, 250, 300):
-            dpi_menu.add_radiobutton(
+            sub.add_radiobutton(
                 label="%d%%%s" % (pct, " (off)" if pct == 100 else ""),
                 value=pct, variable=self.remote_dpi_var,
                 command=self._remote_dpi_changed)
-        dpi_menu.add_separator()
-        dpi_menu.add_command(label="Calibrate...",
-                             command=self.start_calibration)
-        m.add_cascade(label="Remote DPI compensation", menu=dpi_menu)
+        sub.add_separator()
+        sub.add_command(label="Calibrate...", command=self.start_calibration)
+        m.add_checkbutton(label="Traffic in title bar",
+                          variable=self.title_stats_var,
+                          command=self.update_title)
         m.add_separator()
-        # The options dialog's Compression tab as menus.  Upstream greys
+
+        # -- picture (options dialog, Compression tab).  Upstream greys
         # out encoding, color level and quality while AutoSelect is on; in
         # a menu, picking one of them switches AutoSelect off instead.
-        m.add_checkbutton(label="Auto select (encoding, color, quality)",
-                          variable=self.autoselect_var,
-                          command=self._picture_changed)
+        pic = submenu("Picture quality")
+        pic.add_checkbutton(label="Automatic (recommended)",
+                            variable=self.autoselect_var,
+                            command=self._picture_changed)
+        pic.add_separator()
         manual = lambda: self._picture_changed(manual=True)  # noqa: E731
-        encoding_menu = tk.Menu(m, tearoff=False)
+        sub = tk.Menu(pic, tearoff=False)
         for name, note in zip(ENCODING_CHOICES,
-                              ("  (zlib + JPEG, recommended)",
-                               "  (zlib, lossless)", "  (no zlib)",
-                               "  (uncompressed)")):
-            encoding_menu.add_radiobutton(label=name + note, value=name,
-                                          variable=self.encoding_var,
-                                          command=manual)
-        m.add_cascade(label="Preferred encoding", menu=encoding_menu)
-        colour_menu = tk.Menu(m, tearoff=False)
-        for value, label in ((3, "Full color"),
-                             (2, "Medium (256 colors)"),
-                             (1, "Low (64 colors)"),
-                             (0, "Very low (8 colors)")):
-            colour_menu.add_radiobutton(label=label, value=value,
-                                        variable=self.colour_var,
-                                        command=manual)
-        m.add_cascade(label="Color level", menu=colour_menu)
+                              ("zlib + JPEG", "zlib, lossless", "no zlib",
+                               "uncompressed")):
+            sub.add_radiobutton(label="%s  (%s)" % (name, note), value=name,
+                                variable=self.encoding_var, command=manual)
+        pic.add_cascade(label="Encoding", menu=sub)
+        sub = tk.Menu(pic, tearoff=False)
+        for value, label in ((3, "Full color (24 bit)"),
+                             (2, "256 colors (8 bit)"),
+                             (1, "64 colors (6 bit)"),
+                             (0, "8 colors (3 bit)")):
+            sub.add_radiobutton(label=label, value=value,
+                                variable=self.colour_var, command=manual)
+        pic.add_cascade(label="Color depth", menu=sub)
         from ..rfb.decoders import JPEG_AVAILABLE
-        quality_menu = tk.Menu(m, tearoff=False)
-        quality_menu.add_checkbutton(
-            label="Allow JPEG compression (lossy)", variable=self.jpeg_var,
+        sub = tk.Menu(pic, tearoff=False)
+        sub.add_checkbutton(
+            label="Allow JPEG (lossy)", variable=self.jpeg_var,
             command=self._picture_changed,
             state="normal" if JPEG_AVAILABLE else "disabled")
-        quality_menu.add_separator()
+        sub.add_separator()
         for q in range(9, -1, -1):
-            quality_menu.add_radiobutton(
+            sub.add_radiobutton(
                 label="Quality %d%s" % (q, {9: " (best)",
                                             0: " (smallest)"}.get(q, "")),
                 value=q, variable=self.quality_var, command=manual)
-        m.add_cascade(label="JPEG", menu=quality_menu)
-        compress_menu = tk.Menu(m, tearoff=False)
-        compress_menu.add_radiobutton(label="Server default", value=-1,
-                                      variable=self.compress_var,
-                                      command=self._picture_changed)
-        compress_menu.add_separator()
+        pic.add_cascade(label="JPEG (Tight only)", menu=sub)
+        sub = tk.Menu(pic, tearoff=False)
+        sub.add_radiobutton(label="Server default", value=-1,
+                            variable=self.compress_var,
+                            command=self._picture_changed)
+        sub.add_separator()
         for c in range(10):
-            compress_menu.add_radiobutton(
+            sub.add_radiobutton(
                 label="%d%s" % (c, {0: " (fastest)",
                                     9: " (smallest)"}.get(c, "")),
                 value=c, variable=self.compress_var,
                 command=self._picture_changed)
-        m.add_cascade(label="Compression level", menu=compress_menu)
-        m.add_checkbutton(label="Remote cursor shape",
-                          variable=self.remote_cursor_var,
-                          command=lambda: self.cursors.set_remote_shape(
-                              self.remote_cursor_var.get()),
-                          state="normal" if sys.platform == "win32"
-                          else "disabled")
-        m.add_checkbutton(label="Local input method",
-                          variable=self.local_ime_var,
-                          command=self.apply_local_ime,
-                          state="normal" if sys.platform == "win32"
-                          else "disabled")
+        pic.add_cascade(label="zlib level (Tight and ZRLE)", menu=sub)
+
+        # -- input (options dialog, Input tab)
+        sub = submenu("Input")
+        sub.add_checkbutton(label="View only", variable=self.viewonly_var,
+                            command=self._view_only_changed)
+        sub.add_checkbutton(label="Remote cursor shape",
+                            variable=self.remote_cursor_var,
+                            command=lambda: self.cursors.set_remote_shape(
+                                self.remote_cursor_var.get()),
+                            state="normal" if sys.platform == "win32"
+                            else "disabled")
+        sub.add_checkbutton(label="Local input method (IME)",
+                            variable=self.local_ime_var,
+                            command=self.apply_local_ime,
+                            state="normal" if sys.platform == "win32"
+                            else "disabled")
         m.add_separator()
+
+        # -- keys
         m.add_checkbutton(label="Ctrl", variable=self.ctrl_var,
                           command=lambda: self._toggle_mod("ctrl"))
         m.add_checkbutton(label="Alt", variable=self.alt_var,
@@ -1236,12 +1321,20 @@ class ViewerApp:
         m.add_command(label="Send Ctrl-Alt-Del", command=self.send_cad)
         m.add_separator()
         m.add_command(label="Refresh screen", command=self.refresh)
-        m.add_checkbutton(label="View only", variable=self.viewonly_var,
-                          command=self._view_only_changed)
         m.add_separator()
         m.add_command(label="Save settings", command=self.save_settings)
         m.add_command(label="Save settings as...",
                       command=self.save_settings_as)
+        m.add_separator()
+
+        # -- information
+        if accel.available():
+            m.add_checkbutton(label="Rust decoders (loaded)",
+                              variable=self.rust_var,
+                              command=self._rust_changed)
+        else:
+            m.add_checkbutton(label="Rust decoders: %s" % accel.reason,
+                              variable=self.rust_var, state="disabled")
         m.add_command(label="Connection info...", command=self.show_info)
         m.add_command(label="About SagatVNC Viewer...",
                       command=lambda: dialogs.show_about(self.root))
@@ -1314,6 +1407,8 @@ class ViewerApp:
         o.fullscreen = bool(self.fullscreen_var.get())
         o.viewonly = bool(self.viewonly_var.get())
         o.scaling = "Auto" if self.scaling_var.get() else "Off"
+        o.remoteresize = bool(self.remote_resize_var.get())
+        o.titlestats = bool(self.title_stats_var.get())
         o.remotedpiscale = (self.calibrating if self.calibrating is not None
                             else self.remote_dpi_var.get())
         o.remotecursorshape = bool(self.remote_cursor_var.get())
@@ -1380,14 +1475,29 @@ class ViewerApp:
 
     def _flash_title(self, note, ms=2500):
         """Confirm a save in the title bar instead of a dialog."""
-        title = self.root.title()
-        flashed = "%s (%s)" % (title, note)
-        self.root.title(flashed)
+        self.title_note = (note, time.monotonic() + ms / 1000.0)
+        self.update_title()
+        self.root.after(ms + 50, self.update_title)
 
-        def restore():
-            if self.root.title() == flashed:   # not renamed meanwhile
-                self.root.title(title)
-        self.root.after(ms, restore)
+    # -- window resizing / native decoders ---------------------------------
+    def _resize_mode_changed(self):
+        """Who adapts when the window changes size: the server (a new
+        remote resolution, falling back to scaling when it refuses, as
+        Windows servers do) or this viewer (scaling or scrollbars)."""
+        mode = self.resize_mode_var.get()
+        self.remote_resize_var.set(mode == "remote")
+        self.scaling_var.set(mode != "scroll")
+        log("Window resizing: %s" % {
+            "remote": "change the remote resolution",
+            "scale": "scale the picture",
+            "scroll": "1:1 with scrollbars"}[mode])
+        self.layout(force=True)
+        if mode == "remote":
+            self.remote_resize()
+
+    def _rust_changed(self):
+        accel.set_enabled(self.rust_var.get())
+        log("Rust decoders %s" % ("on" if accel.lib else "off (Python)"))
 
     # -- pointer calibration -----------------------------------------------
     def start_calibration(self):
@@ -1457,9 +1567,6 @@ class ViewerApp:
         # Move the remote pointer to the corrected position right away
         if self.conn and not self.view_only():
             self._send_pointer(*self.last_pointer_pos)
-
-    def _scaling_changed(self):
-        self.layout(force=True)
 
     def _view_only_changed(self):
         if self.view_only():

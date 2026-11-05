@@ -31,18 +31,33 @@ elif sys.platform == "darwin":
 else:
     LIB_NAME = "libsagatvnc_accel.so"
 
-lib = None
-status = "not loaded"
+lib = None             # the library while in use, else None
+status = "not loaded"  # for the log
+reason = "not loaded"  # short, for the F8 menu
+_library = None        # the loaded library, even while switched off
+
+
+def available():
+    return _library is not None
+
+
+def set_enabled(on):
+    """Switch between the library and the Python code at runtime (F8
+    menu).  Decoders look at ``lib`` for every rectangle, so this takes
+    effect with the next one."""
+    global lib
+    lib = _library if on else None
 
 
 def _load():
-    global lib, status
+    global lib, status, reason, _library
     if os.environ.get("SAGATVNC_NO_ACCEL"):
-        status = "disabled by SAGATVNC_NO_ACCEL"
+        status = reason = "disabled by SAGATVNC_NO_ACCEL"
         return
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), LIB_NAME)
     if not os.path.exists(path):
         status = "not built (python packaging/build_accel.py)"
+        reason = "not built"
         return
     try:
         candidate = ctypes.CDLL(path)
@@ -50,10 +65,12 @@ def _load():
         version = candidate.sagatvnc_accel_version()
     except (OSError, AttributeError) as e:
         status = "failed to load: %s" % e
+        reason = "failed to load"
         return
     if version != API_VERSION:
         status = "wrong version %d (want %d), rebuild it" % (version,
                                                              API_VERSION)
+        reason = "wrong version"
         return
     size, p, isz = ctypes.c_size_t, ctypes.c_void_p, ctypes.c_ssize_t
     for name, args in (
@@ -66,8 +83,9 @@ def _load():
         fn = getattr(candidate, name)
         fn.argtypes = args
         fn.restype = isz
-    lib = candidate
+    lib = _library = candidate
     status = "loaded (%s)" % path
+    reason = "loaded"
 
 
 def _buf(b):

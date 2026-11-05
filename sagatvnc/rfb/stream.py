@@ -24,6 +24,7 @@ class Stream:
         self._pos = 0
         self._wlock = threading.Lock()
         self.bytes_received = 0
+        self.bytes_sent = 0
         # Recent writes, for diagnosing servers that drop the connection
         self.sent_log = collections.deque(maxlen=12)
 
@@ -100,6 +101,7 @@ class Stream:
     def write(self, data):
         with self._wlock:
             self.sock.sendall(data)
+            self.bytes_sent += len(data)
             self.sent_log.append((time.monotonic(), data[:1], len(data)))
 
     def replace_socket(self, sock):

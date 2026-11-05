@@ -96,9 +96,17 @@ Deliberate differences from upstream, kept on purpose:
 - The clipboard is fetched as soon as the server notifies, but only while
   focused (`Viewport::handleClipboardAnnounce`). That is upstream
   behaviour, not a laziness hack.
-- Picture settings are in the F8 menu (encoding, colour level, JPEG,
-  compression level), standing in for the options dialog's Compression
-  tab. Upstream greys out encoding/colour/quality while AutoSelect is
+- The F8 menu has upstream's popup items plus submenus standing in for
+  the options dialog: *Picture quality* (Compression tab) and *Input*.
+  *When the window is resized* combines RemoteResize and Scaling into
+  one choice. Winvnc never implements setScreenLayout (SDesktop's
+  default answers resultProhibited), so only Xvnc really changes
+  resolution. The title bar shows UP:/DL: traffic and size, encodings
+  and depth (`TitleStats`, `update_title`, `Connection.
+  last_update_encodings`). `_flash_title` notes go through
+  `update_title` too, so nothing else may set the title directly.
+- Picture settings: encoding, colour level, JPEG and zlib level, standing
+  in for the options dialog's Compression tab. Upstream greys out encoding/colour/quality while AutoSelect is
   on; in the menu, picking one of them switches AutoSelect off instead.
 - *Save settings* / *Save settings as...* in the F8 menu (upstream only
   has "Save as..." in the connection dialog). It saves the menu state

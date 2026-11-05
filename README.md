@@ -61,8 +61,23 @@ Instead, the remote desktop is scaled to fit the window
 - at exactly 1:1 there is no resampling, so pixels are exact
 
 Only the areas that changed are rescaled. Each patch is resampled with enough
-margin for the filter, so patches leave no seams. `-Scaling=Off` (or
-*Scale to window* in the F8 menu) gives 1:1 with scrollbars. Scaling needs
+margin for the filter, so patches leave no seams. `-Scaling=Off` gives 1:1
+with scrollbars.
+
+### Resizing the window: remote resolution or scaling?
+
+F8 → *When the window is resized* decides who adapts:
+
+- *Change the remote resolution* (`RemoteResize=1`, the TigerVNC default):
+  the server switches to the window's size. Linux Xvnc does this, so
+  maximizing the window changes the remote desktop's resolution. Windows
+  servers (winvnc) refuse such requests, so there the picture is scaled
+  instead.
+- *Scale the picture* (`RemoteResize=0`): the remote resolution stays, and
+  the viewer scales the picture to the window.
+- *Keep 1:1, show scrollbars* (`RemoteResize=0 Scaling=Off`).
+
+*Save settings* keeps the choice in the `.tigervnc` file. Scaling needs
 Pillow (`pip install .[scaling]`); the exe already bundles it. Without Pillow
 the viewer falls back to 1:1. `RemoteResize` still works as in TigerVNC: if
 the server supports it, it changes the remote resolution to match the
@@ -109,10 +124,24 @@ straight to the server, and you type Chinese/Japanese/Korean with the
 desktop. Turn it back on with *Local input method* in the F8 menu, or
 `-LocalInputMethod`.
 
-Press **F8** (`-MenuKey`) inside the session to open the popup menu. It has
-full screen, scaling, the picture settings (auto select, preferred
-encoding, color level, JPEG, compression level), Ctrl/Alt toggles, Send
-Ctrl-Alt-Del, refresh, view-only, connection info and disconnect.
+Press **F8** (`-MenuKey`) inside the session to open the popup menu:
+
+- Disconnect
+- Window: full screen, resize window to session, *When the window is
+  resized*, remote DPI compensation, *Traffic in title bar*
+- *Picture quality*: automatic (recommended), encoding, color depth,
+  JPEG (Tight only), zlib level (Tight and ZRLE)
+- *Input*: view only, remote cursor shape, local input method (IME)
+- Keys: Ctrl, Alt, Send F8, Send Ctrl-Alt-Del; refresh screen
+- Save settings, Save settings as...
+- *Rust decoders*: ticked when the native decoders are loaded (untick to
+  compare with the Python code); otherwise it says why they are not
+- Connection info, About
+
+The title bar shows the live traffic and what the session uses, e.g.
+`UP: 0.4 KiB/s DL: 2.1 MiB/s   2560x1600 Tight+JPEG 24bit` (remote size,
+the encodings of the last update, color depth). Turn it off with *Traffic
+in title bar* or `-TitleStats=0`.
 
 *Save settings* writes what you changed in the menu back to the
 `.tigervnc` file the session was opened from (or asks where, if there was
@@ -175,3 +204,10 @@ handshake, authentication and all decoders run without a real VNC server.
 GNU General Public License version 2 or later; see [LICENSE](LICENSE). This
 program is a derivative work of TigerVNC, and source files keep the upstream
 copyright notices of the code they were ported from.
+
+The optional Rust decoders in `accel/` are part of this program and under
+the same license; [accel/README.md](accel/README.md) says where they come
+from. What the Windows exe bundles (Python, Tcl/Tk, Pillow, PyInstaller's
+bootloader, the Rust standard library) is listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); the build copies their
+license texts to `dist\licenses\`.

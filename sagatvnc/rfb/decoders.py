@@ -345,6 +345,8 @@ class TightDecoder(Decoder):
     def __init__(self):
         self.reset()
 
+    last_jpeg = False
+
     def reset(self):
         self.zs = [zlib.decompressobj() for _ in range(4)]
 
@@ -371,6 +373,7 @@ class TightDecoder(Decoder):
                 self.zs[i] = zlib.decompressobj()
         ctl >>= 4
         tp = pc.tpix
+        self.last_jpeg = ctl == self.JPEG     # for the title bar summary
 
         if ctl == self.FILL:
             fb.fill_rect(x, y, w, h, bytes(pc.tpix_to_rgb(stream.read(tp))))
