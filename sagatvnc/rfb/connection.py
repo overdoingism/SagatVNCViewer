@@ -80,7 +80,7 @@ class ConnectionOptions:
     preferred_encoding: int = enc.TIGHT
     # Seconds to wait for each answer from the server until the session
     # starts; None = forever, as upstream (SagatVNC, ConnectTimeout)
-    handshake_timeout: float = 30.0
+    handshake_timeout: float = 10.0
     # A security type the user picked (login dialog); used when the server
     # offers it, otherwise the safest one is (SagatVNC)
     preferred_security: int = None
