@@ -36,6 +36,8 @@ XK_Alt_R = 0xFFEA
 XK_ISO_Level3_Shift = 0xFE03
 XK_Shift_L = 0xFFE1
 XK_Shift_R = 0xFFE2
+XK_Print = 0xFF61
+XK_Sys_Req = 0xFF15
 
 # Virtual keys
 VK_SHIFT, VK_CONTROL, VK_MENU = 0x10, 0x11, 0x12
@@ -208,6 +210,10 @@ class Keyboard:
             # No scan code (e.g. characters from an IME/VK_PACKET):
             # use a synthetic code so the release can still be matched
             code = 0x20000 + (keysym or 0)
+        if self.windows and event.keycode == VK_SNAPSHOT:
+            # Tk has no keysym for it (KeyboardWin32's table: Print, or
+            # Sys_Req with Alt)
+            keysym = XK_Sys_Req if _alt_held() else XK_Print
         if keysym is None:
             return
         if self.windows:
@@ -249,6 +255,11 @@ class Keyboard:
             if self.right_shift_down:
                 self.release(0x36)
             self.left_shift_down = self.right_shift_down = False
+
+
+def _alt_held():
+    import ctypes
+    return bool(ctypes.windll.user32.GetKeyState(VK_MENU) & 0x8000)
 
 
 # -- lock key LEDs (KeyboardWin32::getLEDState / setLEDState) ----------------

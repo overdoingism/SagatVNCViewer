@@ -132,11 +132,33 @@ Press **F8** (`-MenuKey`) inside the session to open the popup menu:
 - *Picture quality*: automatic (recommended), encoding, color depth,
   JPEG (Tight only), zlib level (Tight and ZRLE)
 - *Input*: view only, remote cursor shape, local input method (IME)
+- *Keyboard*: menu key (F7-F12), and which special keys go to the remote
+  computer (see below)
 - Keys: Ctrl, Alt, Send F8, Send Ctrl-Alt-Del; refresh screen
 - Save settings, Save settings as...
 - *Rust decoders*: ticked when the native decoders are loaded (untick to
   compare with the Python code); otherwise it says why they are not
 - Connection info, About
+
+### Special keys
+
+While the viewer window has focus (Windows), every key goes to the remote
+computer, including Alt+Esc, Ctrl+Esc, Alt+F4, Alt+Space and the
+input-language hotkeys (Alt+Shift, Ctrl+Shift), so you switch the
+*remote* input method. Exceptions:
+
+| Keys | Default | F8 > Keyboard / parameter |
+|------|---------|---------------------------|
+| Print Screen | local screenshot | *Send Print Screen to remote*, `PassPrintScreen=1` |
+| Alt+Tab | switch local windows | *Send Alt+Tab to remote*, `PassAltTab=1` |
+| Windows key, Win+anything | local only | *Send Windows key to remote*, `PassWinKey=1` |
+| Ctrl+Alt+Enter | toggle full screen | *Send Ctrl+Alt+Enter to remote*, `PassCtrlAltEnter=1` |
+| Ctrl+Alt+Del, Win+L | always local (Windows doesn't let programs catch them) | F8 > *Send Ctrl-Alt-Del* |
+| The menu key (F8) | opens the menu | *Menu key*: F7-F12, `MenuKey=F9`; F8 > *Send F8* |
+
+*Send system keys to remote* (`SystemKeys=0` to turn it off) switches the
+whole keyboard grab off; then Windows acts on its shortcuts as in any
+program. *Save settings* keeps all of these.
 
 The title bar shows the live traffic and what the session uses, e.g.
 `UP: 0.4 KiB/s DL: 2.1 MiB/s   2560x1600 Tight+JPEG 24bit` (remote size,

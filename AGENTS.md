@@ -73,7 +73,25 @@ Deliberate differences from upstream, kept on purpose:
   because the decoders only handle the formats we ask for. Later changes
   are refused on pre-3.8 servers, as in `setPF()`.
 - F8 popup menu (`MenuKey`) instead of upstream's ShortcutModifiers combos,
-  which have no Windows counterpart. The owner chose this.
+  which have no Windows counterpart. The owner chose this. The menu offers
+  F7-F12 (Keyboard > Menu key); any keysym works from files.
+- **System keys** (`syskeys.py`, ports win32.cxx keyboard_hook +
+  message_hook): a WH_KEYBOARD_LL hook swallows keys while the desktop
+  window is foreground with no menu open, and reposts them as WM_KEYDOWN
+  (never WM_SYSKEYDOWN, so DefWindowProc can't close the window on Alt+F4).
+  Owner's rule: everything goes to the server except what can't be caught
+  (Ctrl+Alt+Del; Win+L is handled by Windows too) and these choices,
+  local by default: Print Screen (`PassPrintScreen`), Alt+Tab
+  (`PassAltTab`), the Windows key and its combinations (`PassWinKey`;
+  local means the server never sees them, `_local_only_key`), and
+  Ctrl+Alt+Enter = full screen (`PassCtrlAltEnter`). Upstream grabs only
+  in full screen; here whenever the desktop has focus (`SystemKeys`).
+  Local combinations need Windows to see modifiers we swallowed:
+  `KeyPolicy` replays them with SendInput and lets their releases
+  through. Never test the hook with SendInput from a script: injected
+  keys go to whatever window is in front, and a replayed modifier without
+  its physical release stays down system-wide. Drive
+  `SystemKeyGrab._keyboard_hook` with a fake KBDLLHOOKSTRUCT instead.
 - The cursor: the server's shape by default, togglable to the plain
   arrow (F8 menu, `RemoteCursorShape`). Every cursor encoding is always
   advertised, so the server never draws a cursor into the image. Windows'
@@ -255,7 +273,7 @@ read pixels back with `app.image.get(x, y)`.
 ## Roadmap ideas
 Remaining items from the fidelity audit: X509 trust store/CRL/TOFU keyed on
 the public key (upstream format), ExtendedMouseButtons, QEMUAudio,
-keyboard grab (FullscreenSystemKeys), multi-monitor full screen,
+multi-monitor full screen,
 `default.tigervnc` at startup, only the GUI subset of parameters from
 .tigervnc files, repaint during long updates.
 CursorWithAlpha, ContinuousUpdates + Fence, RA2/RA2ne/DH security,

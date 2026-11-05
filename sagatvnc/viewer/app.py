@@ -35,6 +35,7 @@ from .parameters import config_dir, parse_server
 from .cursor import CursorManager
 from .scaler import Scaler, fit_size
 from .win32 import set_local_ime
+from . import syskeys
 
 POLL_MS = 10
 
@@ -218,6 +219,20 @@ class ViewerApp:
             "scale" if scaling == "auto" else "scroll")
         self.title_stats_var = tk.BooleanVar(value=bool(options.titlestats))
         self.rust_var = tk.BooleanVar(value=accel.lib is not None)
+        # Keyboard: menu key and which special keys go to the server
+        self.menukey_var = tk.StringVar(value=options.menukey)
+        self.system_keys_var = tk.BooleanVar(value=bool(options.systemkeys))
+        self.pass_print_var = tk.BooleanVar(
+            value=bool(options.passprintscreen))
+        self.pass_alt_tab_var = tk.BooleanVar(value=bool(options.passalttab))
+        self.pass_win_var = tk.BooleanVar(value=bool(options.passwinkey))
+        self.pass_cae_var = tk.BooleanVar(
+            value=bool(options.passctrlaltenter))
+        self.key_policy = syskeys.KeyPolicy(
+            bool(options.passprintscreen), bool(options.passalttab),
+            bool(options.passwinkey))
+        self.key_grab = None
+        self.send_menu_key_index = None
         self.desktop_name = ""
         self.title_note = None          # (text, until) after a save
         self.traffic = None             # (time, sent, received)
@@ -515,6 +530,7 @@ class ViewerApp:
         self.start_connection(sock)
 
     def quit(self):
+        self.ungrab_keyboard()
         if self.conn:
             self.conn.close()
         try:
@@ -884,8 +900,91 @@ class ViewerApp:
             return "break"
         if self.view_only() or not self.conn:
             return "break"
+        if event.keysym in ("Return", "KP_Enter") and \
+                not self.pass_cae_var.get() and self._ctrl_alt_held(event):
+            # Ctrl+Alt+Enter: full screen (SagatVNC; upstream has no
+            # default shortcut for it)
+            self.keyboard.resolve_altgr(False)
+            self.set_fullscreen(not self.fullscreen)
+            return "break"
+        if self._local_only_key(event):
+            return "break"
         self.keyboard.key_press(event)
         return "break"
+
+    def _ctrl_alt_held(self, event):
+        if sys.platform == "win32":
+            import ctypes
+            gks = ctypes.windll.user32.GetKeyState
+            return bool(gks(0x11) & 0x8000 and gks(0x12) & 0x8000)
+        return bool(event.state & 0x4 and event.state & 0x8)
+
+    def _local_only_key(self, event):
+        """Keys set to act locally only: never sent to the server, even
+        when Windows also hands them to us (the Windows key, or a key
+        pressed while it is held; Print Screen)."""
+        if sys.platform != "win32":
+            return False
+        if event.keycode == syskeys.VK_SNAPSHOT:
+            return not self.pass_print_var.get()
+        if not self.pass_win_var.get():
+            if event.keycode in syskeys.WINS:
+                return True
+            import ctypes
+            gks = ctypes.windll.user32.GetKeyState
+            if gks(syskeys.VK_LWIN) & 0x8000 or \
+                    gks(syskeys.VK_RWIN) & 0x8000:
+                return True
+        return False
+
+    # -- system keys (DesktopWindow::grabKeyboard) ---------------------------
+    def _frame_hwnd(self):
+        return int(self.root.wm_frame(), 16)
+
+    def grab_keyboard(self):
+        if not syskeys.available() or not self.system_keys_var.get() or \
+                self.view_only() or not self.canvas:
+            return
+        if self.key_grab is None:
+            self.key_grab = syskeys.SystemKeyGrab(self._frame_hwnd(),
+                                                  self.key_policy, log)
+        self.key_grab.set_window(self._frame_hwnd())
+        self.key_grab.start()
+
+    def ungrab_keyboard(self):
+        if self.key_grab:
+            self.key_grab.stop()
+
+    def _keys_changed(self):
+        """Keyboard submenu: apply the choices."""
+        p = self.key_policy
+        p.pass_print = self.pass_print_var.get()
+        p.pass_alt_tab = self.pass_alt_tab_var.get()
+        p.pass_win = self.pass_win_var.get()
+        if self.system_keys_var.get():
+            if self.has_focus:
+                self.grab_keyboard()
+        else:
+            self.ungrab_keyboard()
+        state = "normal" if self.system_keys_var.get() and \
+            syskeys.available() else "disabled"
+        for i in self.grab_dependent_entries:
+            self.keys_menu.entryconfigure(i, state=state)
+        log("Keyboard: system keys %s; to the server: %s" % (
+            "grabbed" if self.system_keys_var.get() else "local",
+            ", ".join(n for n, v in (
+                ("Print Screen", p.pass_print), ("Alt+Tab", p.pass_alt_tab),
+                ("Windows key", p.pass_win),
+                ("Ctrl+Alt+Enter", self.pass_cae_var.get())) if v)
+            or "none of the optional ones"))
+
+    def _menu_key_changed(self):
+        key = self.menukey_var.get()
+        self.opts.menukey = key
+        if self.send_menu_key_index is not None:
+            self.menu.entryconfigure(self.send_menu_key_index,
+                                     label="Send %s" % key)
+        log("Menu key: %s" % key)
 
     def on_key_release(self, event):
         if self._swallow_fake_lock_key(event):
@@ -920,12 +1019,14 @@ class ViewerApp:
 
     def on_focus_out(self, event):
         self.has_focus = False
+        self.ungrab_keyboard()
         # We won't get more key events, so reset our knowledge about keys
         self.release_all_keys()
 
     def on_focus_in(self, event):
         """Viewport FL_FOCUS"""
         self.has_focus = True
+        self.grab_keyboard()
         if sys.platform == "win32" and not self.local_ime_var.get():
             set_local_ime(self.root, False)    # cheap; survives remaps
         if not self.conn:
@@ -1308,6 +1409,7 @@ class ViewerApp:
                             command=self.apply_local_ime,
                             state="normal" if sys.platform == "win32"
                             else "disabled")
+        self._build_keys_menu(submenu("Keyboard"))
         m.add_separator()
 
         # -- keys
@@ -1318,6 +1420,7 @@ class ViewerApp:
         if self.opts.menukey:
             m.add_command(label="Send %s" % self.opts.menukey,
                           command=self.send_menu_key)
+            self.send_menu_key_index = m.index("end")
         m.add_command(label="Send Ctrl-Alt-Del", command=self.send_cad)
         m.add_separator()
         m.add_command(label="Refresh screen", command=self.refresh)
@@ -1341,6 +1444,35 @@ class ViewerApp:
         m.add_separator()
         m.add_command(label="Dismiss menu", command=lambda: None)
         self.menu = m
+
+    def _build_keys_menu(self, sub):
+        """Menu key and where special keys go."""
+        keys = tk.Menu(sub, tearoff=False)
+        for n in range(7, 13):
+            keys.add_radiobutton(label="F%d" % n, value="F%d" % n,
+                                 variable=self.menukey_var,
+                                 command=self._menu_key_changed)
+        sub.add_cascade(label="Menu key", menu=keys)
+        sub.add_separator()
+        win = "normal" if syskeys.available() else "disabled"
+        sub.add_checkbutton(label="Send system keys to remote "
+                            "(all but Ctrl+Alt+Del)",
+                            variable=self.system_keys_var,
+                            command=self._keys_changed, state=win)
+        self.grab_dependent_entries = []
+        for label, var in (
+                ("Send Print Screen to remote", self.pass_print_var),
+                ("Send Alt+Tab to remote", self.pass_alt_tab_var),
+                ("Send Windows key to remote", self.pass_win_var)):
+            sub.add_checkbutton(label=label, variable=var,
+                                command=self._keys_changed,
+                                state=win if self.system_keys_var.get()
+                                else "disabled")
+            self.grab_dependent_entries.append(sub.index("end"))
+        sub.add_checkbutton(label="Send Ctrl+Alt+Enter to remote "
+                            "(off: full screen)", variable=self.pass_cae_var,
+                            command=self._keys_changed)
+        self.keys_menu = sub
 
     def show_menu(self, event):
         self.release_all_keys()
@@ -1409,6 +1541,12 @@ class ViewerApp:
         o.scaling = "Auto" if self.scaling_var.get() else "Off"
         o.remoteresize = bool(self.remote_resize_var.get())
         o.titlestats = bool(self.title_stats_var.get())
+        o.menukey = self.menukey_var.get()
+        o.systemkeys = bool(self.system_keys_var.get())
+        o.passprintscreen = bool(self.pass_print_var.get())
+        o.passalttab = bool(self.pass_alt_tab_var.get())
+        o.passwinkey = bool(self.pass_win_var.get())
+        o.passctrlaltenter = bool(self.pass_cae_var.get())
         o.remotedpiscale = (self.calibrating if self.calibrating is not None
                             else self.remote_dpi_var.get())
         o.remotecursorshape = bool(self.remote_cursor_var.get())
@@ -1571,6 +1709,9 @@ class ViewerApp:
     def _view_only_changed(self):
         if self.view_only():
             self.release_all_keys()
+            self.ungrab_keyboard()
+        elif self.has_focus:
+            self.grab_keyboard()
 
     def send_menu_key(self):
         if self.view_only():
@@ -1610,6 +1751,8 @@ class ViewerApp:
         self.root.attributes("-fullscreen", on)
         self.root.update_idletasks()
         icon.set_window_icon(self.root)     # Tk rebuilt the outer window
+        if self.key_grab:
+            self.key_grab.set_window(self._frame_hwnd())
         self.layout()
 
     def resize_to_session(self):

@@ -130,6 +130,24 @@ PARAMS = [
           "Maximum permitted length of an incoming clipboard update"),
     Param("MenuKey", str, "F8", "The key which brings up the popup menu "
           "(a Tk keysym name, or empty to disable)"),
+    Param("SystemKeys", bool, True,
+          "Send special keys (Alt+Esc, Ctrl+Esc, Alt+F4, input-language "
+          "hotkeys, ...) to the server while the viewer has focus, instead "
+          "of letting the local system act on them. Ctrl+Alt+Del and "
+          "Win+L always stay local. SagatVNC only (TigerVNC: "
+          "FullscreenSystemKeys); Windows"),
+    Param("PassPrintScreen", bool, False,
+          "Send Print Screen to the server (off: local screenshot). "
+          "SagatVNC only; Windows"),
+    Param("PassAltTab", bool, False,
+          "Send Alt+Tab to the server (off: switch local windows). "
+          "SagatVNC only; Windows"),
+    Param("PassWinKey", bool, False,
+          "Send the Windows key and its combinations to the server (off: "
+          "they act locally only). SagatVNC only; Windows"),
+    Param("PassCtrlAltEnter", bool, False,
+          "Send Ctrl+Alt+Enter to the server (off: it toggles full "
+          "screen). SagatVNC only"),
     Param("PointerEventInterval", int, 17,
           "Time in milliseconds to rate-limit successive pointer events"),
     Param("AlertOnFatalError", bool, True,
