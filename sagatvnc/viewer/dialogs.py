@@ -275,7 +275,7 @@ class AuthDialog(_Modal):
         row += 1
         if security and security[0]:
             ttk.Label(frame, style="Hint.TLabel",
-                      text=" · ".join(p for p in security if p)).grid(
+                      text=" \u00b7 ".join(p for p in security if p)).grid(
                 row=row, column=0, columnspan=2, sticky="w", pady=(2, 0))
         self.button_bar([("Cancel", self.cancel), ("OK", self.ok)])
         # The username field only when it still needs typing (it is
