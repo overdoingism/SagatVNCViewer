@@ -213,6 +213,7 @@ class SecurityHandler:
         anon = chosen in (enc.SEC_TLS_NONE, enc.SEC_TLS_VNC, enc.SEC_TLS_PLAIN)
         if s.u8() == 0:
             raise SecurityError("Server failed to initialize TLS session")
+        self.conn._set_stage("the TLS handshake", "Starting TLS...")
         self.start_tls(anon)
         if chosen in (enc.SEC_TLS_VNC, enc.SEC_X509_VNC):
             self.vnc_auth()
@@ -280,8 +281,27 @@ class SecurityHandler:
                     f.write("%s %s\n" % (h, v))
 
 
-def connect_socket(host, port, timeout=None):
-    sock = socket.create_connection((host, port), timeout=timeout)
-    sock.settimeout(None)
-    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    return sock
+def connect_socket(host, port, timeout=None, register=None):
+    """socket.create_connection(), except that ``register(sock)`` is told
+    about each socket before it connects, so another thread can close it
+    to cancel the attempt."""
+    err = None
+    for family, kind, proto, _, addr in socket.getaddrinfo(
+            host, port, 0, socket.SOCK_STREAM):
+        sock = socket.socket(family, kind, proto)
+        if register:
+            register(sock)
+        try:
+            sock.settimeout(timeout)
+            sock.connect(addr)
+        except OSError as e:
+            err = e
+            sock.close()
+            continue
+        sock.settimeout(None)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        return sock
+    if isinstance(err, socket.timeout):
+        raise OSError("No answer from %s port %d within %d seconds" %
+                      (host, port, timeout))
+    raise err or OSError("Could not resolve %s" % host)

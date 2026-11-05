@@ -98,6 +98,15 @@ Deliberate differences from upstream, kept on purpose:
   keys go to whatever window is in front, and a replayed modifier without
   its physical release stays down system-wide. Drive
   `SystemKeyGrab._keyboard_hook` with a fake KBDLLHOOKSTRUCT instead.
+- **Connecting** happens on the network thread (`ViewerApp._connect`,
+  `connect_socket(register=...)` so Cancel can close the socket), not on
+  the GUI thread as before, so `ConnectingWindow` can show progress
+  (`Connection._set_stage` -> handler `status`) and cancel. Not upstream:
+  TigerVNC shows nothing and waits forever. `ConnectTimeout` limits the
+  TCP connect and each read until ServerInit (`ServerTimeout`); the socket
+  timeout is cleared once the session starts. During a reconnect
+  `self.conn` keeps the old, closed connection until the new one exists,
+  so GUI code never sees None.
 - **Security type choice** (`security.choose_security`,
   `Connection._choose_top_level`): upstream takes the first type in the
   server's order (processSecurityTypesMsg, CSecurityVeNCrypt); we take the

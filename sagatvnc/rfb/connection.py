@@ -40,6 +40,7 @@ Input methods (``send_key_press``, ``pointer_event``, ...) may be called
 from any thread.
 """
 
+import socket
 import struct
 import threading
 import time
@@ -63,6 +64,11 @@ class DroppedBeforeSession(ProtocolError):
     session could be established." """
 
 
+class ServerTimeout(DroppedBeforeSession):
+    """The server stopped answering before the session started (not in
+    upstream, which waits forever)."""
+
+
 @dataclass
 class ConnectionOptions:
     shared: bool = False
@@ -72,6 +78,9 @@ class ConnectionOptions:
     known_hosts: str = ""
     auto_select: bool = True
     preferred_encoding: int = enc.TIGHT
+    # Seconds to wait for each answer from the server until the session
+    # starts; None = forever, as upstream (SagatVNC, ConnectTimeout)
+    handshake_timeout: float = 30.0
     # A security type the user picked (login dialog); used when the server
     # offers it, otherwise the safest one is (SagatVNC)
     preferred_security: int = None
@@ -134,6 +143,8 @@ class Connection:
         # or "ZRLE/Raw" (for the title bar)
         self.last_update_encodings = ""
         self.session_start = None
+        # What we are waiting for, for the connecting window and errors
+        self.stage = "the server's greeting"
         self.update_count = 0
 
         # ServerParams: what the server told us it supports
@@ -229,12 +240,30 @@ class Connection:
         return None
 
     # -- main loop ---------------------------------------------------------
+    def _set_stage(self, stage, status):
+        self.stage = stage
+        self._call("status", status)
+
     def run(self):
+        timeout = self.options.handshake_timeout
         try:
+            self.stream.sock.settimeout(timeout or None)
+            self._set_stage("the server's greeting",
+                            "Waiting for the server to answer...")
             self._handshake()
             self._initialise()
+            # Sessions may be idle for hours: no timeout from now on
+            self.stream.sock.settimeout(None)
             while not self.closed:
                 self._read_message()
+        except socket.timeout:
+            if self.closed or self.session_start is not None:
+                raise
+            raise ServerTimeout(
+                "The server accepted the connection but did not answer "
+                "within %d seconds (waiting for %s).\n\nThe VNC server "
+                "may be hung; restarting it usually helps." %
+                (timeout, self.stage))
         except (ConnectionClosed, OSError):
             if self.closed:
                 return
@@ -313,6 +342,8 @@ class Connection:
             self.version = (3, 3)
         s.write(b"RFB %03d.%03d\n" % self.version)
         self.log("Using RFB protocol version %d.%d" % self.version)
+        self._set_stage("the list of security types",
+                        "Negotiating security...")
 
         enabled = self._enabled_sec_types()
         if self.version == (3, 3):
@@ -349,6 +380,8 @@ class Connection:
         if self.version < (3, 8) and sec == enc.SEC_NONE:
             return
         self.log("Waiting for the security result")
+        self._set_stage("the result of the authentication",
+                        "Checking the password...")
         result = s.u32()
         if result == 0:
             return
@@ -365,6 +398,8 @@ class Connection:
         return _decode_text(self.stream.read(length))
 
     def _initialise(self):
+        self._set_stage("the desktop's details (ServerInit)",
+                        "Starting the session...")
         s = self.stream
         s.write(bytes([1 if self.options.shared else 0]))
         width, height = s.u16(), s.u16()

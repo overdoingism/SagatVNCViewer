@@ -157,6 +157,10 @@ PARAMS = [
     Param("AlertOnFatalError", bool, True,
           "Give a dialog on connection problems rather than exiting "
           "immediately"),
+    Param("ConnectTimeout", int, 30,
+          "Seconds to wait for the server while connecting (TCP, then each "
+          "answer until the session starts); 0 = forever, as TigerVNC. "
+          "SagatVNC only"),
     Param("ReconnectOnError", bool, True,
           "Give a dialog on connection problems with an option to "
           "reconnect"),

@@ -97,9 +97,11 @@ class _Modal(tk.Toplevel):
             self.logo = None
         ttk.Label(head, text=heading, style="Heading.TLabel").grid(
             row=0, column=1, sticky="sw")
+        self.subtitle = None
         if subtitle:
-            ttk.Label(head, text=subtitle, style=subtitle_style).grid(
-                row=1, column=1, sticky="nw", pady=(2, 0))
+            self.subtitle = ttk.Label(head, text=subtitle,
+                                      style=subtitle_style)
+            self.subtitle.grid(row=1, column=1, sticky="nw", pady=(2, 0))
         return head
 
     def body(self):
@@ -126,13 +128,16 @@ class _Modal(tk.Toplevel):
             self.buttons[text] = b
         return bar
 
-    def run(self):
+    def place(self):
+        """Centre on the screen, a bit above the middle."""
         self.update_idletasks()
-        # Centre on the screen, a bit above the middle
         w, h = self.winfo_reqwidth(), self.winfo_reqheight()
         x = (self.winfo_screenwidth() - w) // 2
         y = (self.winfo_screenheight() - h) // 3
         self.geometry("+%d+%d" % (x, y))
+
+    def run(self):
+        self.place()
         self.deiconify()
         self.lift()
         self.attributes("-topmost", True)
@@ -189,6 +194,43 @@ class AboutDialog(_Modal):
         ttk.Label(text, text=rest, justify="left").pack(anchor="w",
                                                         pady=(GAP, 0))
         self.button_bar([("Close", self.ok)])
+
+
+class ConnectingWindow(_Modal):
+    """Shown while connecting, until the desktop appears (not in TigerVNC,
+    which shows nothing): where it is, and a way to give up.  Not modal;
+    the viewer hides it while it asks for a password or a certificate."""
+
+    def __init__(self, parent, host, on_cancel):
+        super().__init__(parent, "SagatVNC Viewer")
+        self.on_cancel = on_cancel
+        self.header("Connecting to %s" % host, "Connecting...")
+        frame = self.body()
+        self.bar = ttk.Progressbar(frame, mode="indeterminate", length=360)
+        self.bar.grid(row=0, column=0, columnspan=2, sticky="we",
+                      pady=(0, GAP))
+        self.button_bar([("Cancel", self.cancel)])
+
+    def set_status(self, text):
+        self.subtitle.configure(text=text)
+
+    def show(self):
+        if self.state() == "normal":
+            return
+        self.place()
+        self.deiconify()
+        self.lift()
+        self.bar.start(15)
+
+    def hide(self):
+        self.bar.stop()
+        self.withdraw()
+
+    def ok(self):                  # Return does nothing here
+        pass
+
+    def cancel(self):
+        self.on_cancel()
 
 
 class ServerDialog(_Modal):

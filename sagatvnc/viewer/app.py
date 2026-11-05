@@ -99,6 +99,10 @@ class ConnectionHandler:
     def get_credentials(self, need_username):
         return self._call_gui(self.app.ask_credentials, need_username)
 
+    def status(self, text):
+        """Connection progress, for the connecting window."""
+        self.events.put(("status", text))
+
     def verify_certificate(self, info):
         return self._call_gui(self.app.ask_certificate, info)
 
@@ -146,6 +150,7 @@ class ConnectionHandler:
 
 
 STATS_MS = 1000        # title bar statistics refresh
+CONNECTING_DELAY_MS = 400   # connecting window only if it takes longer
 
 
 def security_summary(sec):
@@ -215,6 +220,11 @@ class ViewerApp:
         self.expected_window = None
         self.ready_tries = 0
         self.saved_credentials = None
+        self.connecting_window = None
+        self.connecting_status = "Connecting..."
+        self.conn_window_paused = False
+        self.cancelled = False
+        self.connecting_sock = None
         # One-shot credentials carried over a security switch
         self.pending_credentials = None
         self.preferred_security = None       # set by connection_options
@@ -337,8 +347,7 @@ class ViewerApp:
                 self.save_history(server)
                 self.server_name = server
                 self.host, self.port = parse_server(server)
-                log("Connecting to %s port %d" % (self.host, self.port))
-                sock = connect_socket(self.host, self.port)
+                sock = None        # connected on the network thread
         except (OSError, ValueError) as e:
             self.fatal("Failed to connect to \"%s\":\n\n%s" %
                        (self.opts.server or self.host, e), reconnect=False)
@@ -404,24 +413,59 @@ class ViewerApp:
         co.quality_level = o.qualitylevel
         co.no_jpeg = bool(o.nojpeg)
         co.max_cut_text = max(0, o.maxcuttext)
+        co.handshake_timeout = max(0, o.connecttimeout) or None
         from ..rfb.decoders import JPEG_AVAILABLE
         if not JPEG_AVAILABLE and not co.no_jpeg:
             log("Pillow is not installed: JPEG is disabled")
         return co
 
-    def start_connection(self, sock):
+    def start_connection(self, sock=None):
+        """Connect (unless ``sock`` is given, e.g. from -listen) and run the
+        session on the network thread, so the GUI stays alive: the
+        connecting window shows progress and can cancel."""
         self.handler = ConnectionHandler(self)
-        self.conn = Connection(sock, self.host, self.handler,
-                               self.conn_options)
+        # self.conn stays the previous (closed) connection until the new
+        # one exists, so the GUI never sees None during a reconnect
+        self.cancelled = False
+        self.connecting_sock = None
         self.thread = threading.Thread(target=self._network_thread,
-                                       name="rfb", daemon=True)
+                                       args=(sock,), name="rfb", daemon=True)
         self.thread.start()
+        self.root.after(CONNECTING_DELAY_MS, self._show_connecting)
         self.root.after(POLL_MS, self.poll)
 
-    def _network_thread(self):
+    def _connect(self):
+        """TCP connect on the network thread; None if it failed."""
+        log("Connecting to %s port %d" % (self.host, self.port))
+        self.handler.status("Connecting...")
+        try:
+            return connect_socket(
+                self.host, self.port,
+                timeout=self.conn_options.handshake_timeout,
+                register=lambda s: setattr(self, "connecting_sock", s))
+        except OSError as e:
+            if self.cancelled:
+                self.handler.events.put(("closed", "cancelled"))
+            else:
+                # Like a bad address: nothing to retry automatically
+                self.handler.events.put((
+                    "error", "Failed to connect to \"%s\":\n\n%s" %
+                    (self.server_name or self.host, e), False))
+            return None
+
+    def _network_thread(self, sock):
+        if sock is None:
+            sock = self._connect()
+            if sock is None:
+                return
+        self.conn = Connection(sock, self.host, self.handler,
+                               self.conn_options)
+        if self.cancelled:          # cancelled while the socket connected
+            self.conn.close()
         try:
             self.conn.run()
-            self.handler.events.put(("closed", None))
+            self.handler.events.put(("closed", "cancelled" if self.cancelled
+                                     else None))
         except Cancelled:
             self.handler.events.put(("closed", "cancelled"))
         except SwitchSecurity as e:
@@ -432,7 +476,10 @@ class ViewerApp:
                                      "the server. Reason given by the "
                                      "server:\n\n%s" % e))
         except DroppedBeforeSession as e:
-            self.handler.events.put(("error", str(e)))
+            if self.cancelled:
+                self.handler.events.put(("closed", "cancelled"))
+            else:
+                self.handler.events.put(("error", str(e)))
         except ConnectionClosed:
             # CConn: end of stream once the session runs -> disconnect()
             # quietly, as TigerVNC does
@@ -442,13 +489,69 @@ class ViewerApp:
             if not self.conn.closed:
                 log(self.conn.session_summary())
             if self.conn.closed:
-                self.handler.events.put(("closed", None))
+                self.handler.events.put(("closed", "cancelled"
+                                         if self.cancelled else None))
             else:
                 self.handler.events.put(("error", "%s: %s" %
                                          (type(e).__name__, e)))
 
+    # -- the connecting window ----------------------------------------------
+    def _show_connecting(self):
+        """Only if connecting takes a moment, so fast ones don't flash."""
+        if self.canvas is not None or self.conn_window_paused:
+            return
+        if self.connecting_window is None:
+            self.connecting_window = dialogs.ConnectingWindow(
+                self.root, "%s:%d" % (self.host, self.port)
+                if self.port != 5900 else self.host,
+                self.cancel_connecting)
+            self.connecting_window.set_status(self.connecting_status)
+        self.connecting_window.show()
+
+    def _close_connecting(self):
+        if self.connecting_window is not None:
+            try:
+                self.connecting_window.destroy()
+            except tk.TclError:
+                pass
+            self.connecting_window = None
+
+    def _pause_connecting(self, paused):
+        """Out of the way while a password or certificate question is
+        open; back afterwards if still connecting."""
+        self.conn_window_paused = paused
+        if self.connecting_window is not None:
+            if paused:
+                self.connecting_window.hide()
+            elif self.canvas is None:
+                self.connecting_window.show()
+
+    def cancel_connecting(self):
+        log("Connecting cancelled")
+        self.cancelled = True
+        self._close_connecting()
+        if self.conn is not None:
+            self.conn.close()
+        if self.connecting_sock is not None:
+            try:
+                self.connecting_sock.close()
+            except OSError:
+                pass
+
+    def set_connecting_status(self, text):
+        self.connecting_status = text
+        if self.connecting_window is not None:
+            self.connecting_window.set_status(text)
+
     # -- callbacks run on the GUI thread --------------------------------------
     def ask_credentials(self, need_username):
+        self._pause_connecting(True)
+        try:
+            return self._ask_credentials(need_username)
+        finally:
+            self._pause_connecting(False)
+
+    def _ask_credentials(self, need_username):
         """CConn::getUserPasswd(): environment, saved, password file,
         then the dialog."""
         env_user = os.environ.get("VNC_USERNAME")
@@ -496,6 +599,13 @@ class ViewerApp:
         return user, password
 
     def ask_certificate(self, info):
+        self._pause_connecting(True)
+        try:
+            return self._ask_certificate(info)
+        finally:
+            self._pause_connecting(False)
+
+    def _ask_certificate(self, info):
         if info["changed"]:
             msg = ("The certificate of %s has CHANGED since you last "
                    "connected!\n\nSHA-256 fingerprint:\n%s\n\nSomeone may "
@@ -540,8 +650,11 @@ class ViewerApp:
                     self.set_led_state(ev[1])
                 elif kind == "resizedone":
                     self.set_desktop_size_done(ev[1])
+                elif kind == "status":
+                    self.set_connecting_status(ev[1])
                 elif kind == "error":
-                    self.fatal(ev[1])
+                    self.fatal(ev[1], reconnect=ev[2] if len(ev) > 2
+                               else True)
                     return
                 elif kind == "switch":
                     log("Reconnecting with security type %s" %
@@ -561,6 +674,7 @@ class ViewerApp:
 
     def fatal(self, msg, reconnect=True):
         log(msg)
+        self._close_connecting()
         self.exit_code = 1
         if self.conn:
             self.conn.close()
@@ -578,20 +692,15 @@ class ViewerApp:
         self.quit()
 
     def reconnect(self):
-        try:
-            sock = connect_socket(self.host, self.port)
-        except OSError as e:
-            self.fatal("Failed to connect to %s:%d:\n\n%s" %
-                       (self.host, self.port, e))
-            return
         self.exit_code = 0
         self.desktop_size_sent = False
         self.resize_checked = False
         self.pending_remote_resize = False
         self.first_led_state = True
-        self.start_connection(sock)
+        self.start_connection()
 
     def quit(self):
+        self._close_connecting()
         self.ungrab_keyboard()
         if self.conn:
             self.conn.close()
@@ -645,6 +754,7 @@ class ViewerApp:
         self.root.after(STATS_MS, self._tick_stats)
 
     def create_desktop(self, width, height, name):
+        self._close_connecting()
         first = self.traffic is None
         self.set_title(name)
         if first:
@@ -813,7 +923,7 @@ class ViewerApp:
                 self.handler.damage = [(0, 0, fbw, fbh)]
 
     def paint(self):
-        if self.image is None or self.handler is None:
+        if self.image is None or self.handler is None or self.conn is None:
             return
         self.check_initial_desktop_size()
         fb = self.conn.fb

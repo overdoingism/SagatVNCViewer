@@ -169,6 +169,17 @@ it off with *Traffic in title bar* or `-TitleStats=0`. *Connection info*
 also names the TLS cipher and whether the server's certificate was
 checked.
 
+### Connecting
+
+If connecting takes more than a moment, a small window shows how far it
+got (waiting for the server, negotiating security, starting the session)
+with a *Cancel* button; it steps aside while the password or certificate
+question is open. A server that accepts the connection but stops
+answering is given up on after `ConnectTimeout` seconds (default 30;
+`0` waits forever, as TigerVNC does), with a message saying what it was
+waiting for. Once the session runs there is no timeout, so an idle
+desktop stays connected.
+
 ### Security type
 
 The server lists the security types it accepts; the viewer picks one of
