@@ -26,18 +26,19 @@ cargo test --release --manifest-path accel/Cargo.toml
   the rest of this repository). It copies no source code. The logic is a
   port of the TigerVNC decoder functions listed above, the same way the
   Python modules port it.
-- Because it is derived from TigerVNC (GPL-2.0-or-later), it is licensed
-  under the **GNU General Public License, version 2 or (at your option)
-  any later version**, like the rest of this repository (see `../LICENSE`).
+- It is derived from TigerVNC, which is GPL-2.0-or-later; using that "or
+  later" option, it is licensed under the **GNU General Public License,
+  version 3 or (at your option) any later version**, like the rest of this
+  repository (see `../LICENSE`).
   The file header names the TigerVNC copyright holders, like the Python
   files do.
 - It has **no crate dependencies**: `Cargo.lock` lists only this crate.
   Nothing from crates.io is compiled in.
 - The compiled library links the **Rust standard library**, which is
   dual-licensed MIT OR Apache-2.0 (copyright the Rust Project
-  Developers). Both are compatible with GPL-2.0-or-later; we use it under
-  the MIT terms. When the library is distributed (for example inside
-  `SagatVNCViewer.exe`), its notice has to go with it:
+  Developers). Both are compatible with GPL-3.0-or-later. When the
+  library is distributed (for example inside `SagatVNCViewer.exe`), its
+  notice has to go with it:
   `packaging/build_exe.py` copies the toolchain's `COPYRIGHT-library.html`
   and the MIT/Apache texts into `dist/licenses/`. See
   `../THIRD_PARTY_NOTICES.md`.

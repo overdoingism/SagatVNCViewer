@@ -201,13 +201,15 @@ handshake, authentication and all decoders run without a real VNC server.
 
 ## License
 
-GNU General Public License version 2 or later; see [LICENSE](LICENSE). This
-program is a derivative work of TigerVNC, and source files keep the upstream
-copyright notices of the code they were ported from.
+GNU General Public License version 3 or later; see [LICENSE](LICENSE). This
+program is a derivative work of TigerVNC, which is licensed under the GPL
+"version 2 or (at your option) any later version"; SagatVNC Viewer takes
+that option and is distributed under version 3 or later. Source files keep
+the upstream copyright notices of the code they were ported from.
 
 The optional Rust decoders in `accel/` are part of this program and under
 the same license; [accel/README.md](accel/README.md) says where they come
-from. What the Windows exe bundles (Python, Tcl/Tk, Pillow, PyInstaller's
-bootloader, the Rust standard library) is listed in
+from. What the Windows exe bundles (Python, OpenSSL, Tcl/Tk, Pillow,
+PyInstaller's bootloader, the Rust standard library) is listed in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); the build copies their
 license texts to `dist\licenses\`.

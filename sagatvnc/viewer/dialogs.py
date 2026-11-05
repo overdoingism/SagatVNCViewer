@@ -6,7 +6,7 @@
 #
 # This is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
+# the Free Software Foundation; either version 3 of the License, or
 # (at your option) any later version.
 """Modal Tk dialogs: server selection, authentication, about."""
 
@@ -25,7 +25,7 @@ ABOUT_TEXT = (
     "others (see the TigerVNC source), and on VNC from RealVNC Ltd and\n"
     "AT&T Laboratories Cambridge.\n\n"
     "This is free software, licensed under the GNU General Public\n"
-    "License version 2 or later.  See LICENSE for details." % __version__)
+    "License version 3 or later.  See LICENSE for details." % __version__)
 
 
 def show_about(parent):

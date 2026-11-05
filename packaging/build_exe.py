@@ -1,6 +1,6 @@
 # SagatVNC Viewer - Windows executable build
 # Copyright (C) 2026 SagatVNC Viewer contributors
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Build dist/SagatVNCViewer.exe with PyInstaller.
 
     python -m venv .venv
@@ -79,6 +79,9 @@ def collect_licenses(dest, native):
         ("THIRD_PARTY_NOTICES.md",
          [os.path.join(ROOT, "THIRD_PARTY_NOTICES.md")]),
         ("Python-LICENSE.txt", [os.path.join(base, "LICENSE.txt")]),
+        # Python's ssl module: OpenSSL 3 (Apache-2.0, no NOTICE file)
+        ("OpenSSL-LICENSE.txt",
+         [os.path.join(HERE, "licenses", "OpenSSL-LICENSE.txt")]),
         ("Tcl-Tk-license.terms",
          glob.glob(os.path.join(base, "tcl", "tk8.6", "license.terms"))),
         ("Pillow-LICENSE.txt",

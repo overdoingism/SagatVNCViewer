@@ -2,7 +2,7 @@
 name = "sagatvnc_accel"
 version = "0.1.0"
 edition = "2021"
-license = "GPL-2.0-or-later"
+license = "GPL-3.0-or-later"
 description = "Optional native decoder loops for SagatVNC Viewer (loaded with ctypes)"
 publish = false
 

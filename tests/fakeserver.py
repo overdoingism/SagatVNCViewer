@@ -1,6 +1,6 @@
 # SagatVNC Viewer test helpers
 # Copyright (C) 2026 SagatVNC Viewer contributors
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Encoders and a tiny scripted RFB server, used to exercise the viewer."""
 
 import os

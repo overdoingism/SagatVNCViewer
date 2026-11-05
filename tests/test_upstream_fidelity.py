@@ -1,6 +1,6 @@
 # SagatVNC Viewer tests
 # Copyright (C) 2026 SagatVNC Viewer contributors
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Behaviour ported from TigerVNC after the fidelity audit.  Each test
 names the upstream function it pins down."""
 

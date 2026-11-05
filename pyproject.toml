@@ -7,7 +7,7 @@ name = "sagatvnc-viewer"
 dynamic = ["version"]
 description = "A pure-Python VNC viewer ported from the TigerVNC viewer"
 readme = "README.md"
-license = "GPL-2.0-or-later"
+license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 requires-python = ">=3.9"
 dependencies = []

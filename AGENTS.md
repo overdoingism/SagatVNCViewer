@@ -2,8 +2,14 @@
 
 ## What this is
 A pure-Python port of the **viewer** half of TigerVNC (`vncviewer` +
-the client side of `common/rfb`). License **GPL-2.0-or-later** (same as
-TigerVNC). Standard library only. Please don't add runtime dependencies
+the client side of `common/rfb`). License **GPL-3.0-or-later**.
+TigerVNC is GPL-2.0-or-later; its "or (at your option) any later version"
+lets this derivative be GPL-3.0-or-later (decided 2026-11-05, because the
+exe bundles Apache-2.0 OpenSSL 3, which GPLv2 can't take). Keep every
+upstream copyright line in ported files; only the version in the notice
+changed. Don't add GPL-2.0-only code.
+
+Standard library only. Please don't add runtime dependencies
 without asking the maintainer. Pillow, `cryptography` and the like would
 be optional extras at most.
 

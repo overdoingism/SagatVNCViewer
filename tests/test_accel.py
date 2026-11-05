@@ -1,6 +1,6 @@
 # SagatVNC Viewer tests
 # Copyright (C) 2026 SagatVNC Viewer contributors
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The Rust decoder loops (accel/) must give exactly the pixels, and fail
 on exactly the inputs, that the pure-Python code does."""
 

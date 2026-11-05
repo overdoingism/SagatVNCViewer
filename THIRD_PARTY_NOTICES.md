@@ -1,28 +1,41 @@
 # Third-party notices
 
 SagatVNC Viewer itself is licensed under the GNU General Public License,
-version 2 or later (`LICENSE`). It is a port of TigerVNC (GPL-2.0-or-later,
+version 3 or later (`LICENSE`). It is a port of TigerVNC (GPL-2.0-or-later,
 Copyright (C) 1999-2026 the TigerVNC team and others, including RealVNC
-Ltd and AT&T Laboratories Cambridge); the source files name the
-copyright holders of the upstream code they port.
+Ltd and AT&T Laboratories Cambridge), whose "or any later version" option
+allows distributing the derived work under GPLv3; the source files name
+the copyright holders of the upstream code they port. The parts of
+TigerVNC used as references that carry no GPL notice are public domain
+(D3DES by Richard Outerbridge) or under the X11/MIT-style Open Group
+licence (keysym tables); both are GPLv3-compatible.
 
 ## In the source repository
 | Component | Where | License |
 |-----------|-------|---------|
 | TigerVNC (reference only, not distributed) | `upstream/tigervnc` (git-ignored) | GPL-2.0-or-later |
-| SagatVNC native decoders | `accel/` | GPL-2.0-or-later, see `accel/README.md` |
+| SagatVNC native decoders | `accel/` | GPL-3.0-or-later, see `accel/README.md` |
+| OpenSSL licence text (for the exe) | `packaging/licenses/` | Apache-2.0 (verbatim copy) |
 
 No third-party source code is included in this repository.
 
-## In `SagatVNCViewer.exe`
+## In `SagatVNCViewer.exe`: GPLv3 as a whole
+The exe combines SagatVNC Viewer with Apache-2.0 code (OpenSSL 3, through
+Python's `ssl` module). Apache-2.0 is compatible with GPLv3 but not with
+GPLv2, which is one reason the project is GPL-3.0-or-later. The exe as a
+whole is distributed under the GNU GPL version 3 or later; its source is
+this repository at the matching commit.
+
+## What `SagatVNCViewer.exe` bundles
 The Windows executable bundles the following. `packaging/build_exe.py`
 copies their license texts into `dist/licenses/`; distribute that folder
 with the exe.
 
 | Component | License | Text in `dist/licenses/` |
 |-----------|---------|--------------------------|
-| SagatVNC Viewer | GPL-2.0-or-later | `SagatVNC-LICENSE.txt` |
+| SagatVNC Viewer | GPL-3.0-or-later | `SagatVNC-LICENSE.txt` |
 | Python runtime | PSF License 2.0 (and the notices for what it bundles) | `Python-LICENSE.txt` |
+| OpenSSL 3 (`libssl-3.dll`, `libcrypto-3.dll`, used by Python's `ssl`) | Apache-2.0 (no NOTICE file) | `OpenSSL-LICENSE.txt` |
 | Tcl/Tk 8.6 | Tcl/Tk license (BSD-style) | `Tcl-Tk-license.terms` |
 | Pillow, with the libraries in its wheel (libjpeg-turbo, zlib, FreeType, ...) | MIT-CMU, plus each library's license | `Pillow-LICENSE.txt` |
 | PyInstaller bootloader | GPL-2.0-or-later with the bootloader exception (allows any license for the bundled program) | `PyInstaller-COPYING.txt` |

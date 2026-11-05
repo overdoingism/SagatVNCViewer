@@ -1,6 +1,6 @@
 # SagatVNC Viewer - native decoder library build
 # Copyright (C) 2026 SagatVNC Viewer contributors
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Build the optional Rust decoder library (accel/) and copy it next to
 sagatvnc/rfb/accel.py, where the viewer looks for it.
 
