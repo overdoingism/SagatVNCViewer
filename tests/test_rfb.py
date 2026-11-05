@@ -373,5 +373,41 @@ class EndToEndTest(unittest.TestCase):
         self.assertNotIn("error", self.result)
 
 
+class PixelHelperTest(unittest.TestCase):
+    """The translate/slice helpers against a plain per-pixel reference."""
+
+    @staticmethod
+    def reference_unpack(data, pos, w, h, bits):
+        rowbytes = (w * bits + 7) // 8
+        out = bytearray()
+        for r in range(h):
+            row = data[pos + r * rowbytes:pos + (r + 1) * rowbytes]
+            for x in range(w):
+                bit = x * bits
+                byte = row[bit // 8]
+                out.append((byte >> (8 - bits - bit % 8)) & ((1 << bits) - 1))
+        return bytes(out), pos + rowbytes * h
+
+    def test_unpack_indices(self):
+        from sagatvnc.rfb.decoders import _unpack_indices
+        data = bytes((i * 37 + 11) & 0xFF for i in range(400))
+        for bits in (1, 2, 4, 8):
+            for w in (1, 3, 7, 8, 9, 17, 64):
+                for pos in (0, 3):
+                    got, end = _unpack_indices(data, pos, w, 5, bits)
+                    self.assertEqual((bytes(got), end),
+                                     self.reference_unpack(data, pos, w, 5,
+                                                           bits),
+                                     (bits, w, pos))
+        with self.assertRaises(IndexError):
+            _unpack_indices(b"\0" * 3, 0, 8, 4, 1)
+
+    def test_palette_to_rgb(self):
+        from sagatvnc.rfb.decoders import _palette_to_rgb
+        palette = [b"\x01\x02\x03", b"\xfa\xfb\xfc"]
+        self.assertEqual(bytes(_palette_to_rgb(b"\x01\x00\x07", palette)),
+                         b"\xfa\xfb\xfc\x01\x02\x03\0\0\0")
+
+
 if __name__ == "__main__":
     unittest.main()

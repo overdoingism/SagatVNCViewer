@@ -146,33 +146,56 @@ class HextileDecoder(Decoder):
                         fb.fill_rect(tx + sx, ty + sy, sw, sh, fg)
 
 
+# Pixel work is done with bytes.translate() and extended slice assignment,
+# which run in C: Python only loops per row or per palette entry, never
+# per pixel.
+
+# _BIT_TABLES[bits][k]: byte -> the k-th ``bits``-bit field, MSB first
+_BIT_TABLES = {
+    bits: [bytes((b >> (8 - bits * (k + 1))) & ((1 << bits) - 1)
+                 for b in range(256)) for k in range(8 // bits)]
+    for bits in (1, 2, 4)
+}
+
+
 def _unpack_indices(data, pos, w, h, bits):
-    """Unpack palette indices packed ``bits`` per pixel, rows byte aligned."""
+    """Unpack palette indices packed ``bits`` per pixel, rows byte aligned.
+    Returns (one byte per pixel, new pos); IndexError if data is short."""
     rowbytes = (w * bits + 7) // 8
+    end = pos + rowbytes * h
+    if end > len(data):
+        raise IndexError("packed pixels past the end of the data")
+    src = bytes(data[pos:end])
+    if bits == 8:
+        return src, end
+    per = 8 // bits
+    full = bytearray(len(src) * per)      # incl. each row's padding bits
+    for k, table in enumerate(_BIT_TABLES[bits]):
+        full[k::per] = src.translate(table)
+    padded = rowbytes * per
+    if padded == w:
+        return full, end
     out = bytearray(w * h)
-    mask = (1 << bits) - 1
-    per_byte = 8 // bits
-    i = 0
-    for _ in range(h):
-        row = data[pos:pos + rowbytes]
-        pos += rowbytes
-        n = 0
-        for byte in row:
-            for k in range(per_byte):
-                if n >= w:
-                    break
-                out[i] = (byte >> (8 - bits * (k + 1))) & mask
-                i += 1
-                n += 1
-    return out, pos
+    for r in range(h):
+        out[r * w:(r + 1) * w] = full[r * padded:r * padded + w]
+    return out, end
 
 
 def _palette_to_rgb(indices, palette):
-    """Map palette indices to RGB; ``palette`` is a list of 3 byte values."""
-    table = [bytes(p) for p in palette]
-    if len(table) < 256:
-        table += [b"\0\0\0"] * (256 - len(table))
-    return b"".join(table[i] for i in indices)
+    """Map palette indices to RGB; ``palette`` is a list of 3 byte values.
+    Indices past the palette give black."""
+    planes = []
+    for c in range(3):
+        table = bytearray(256)
+        for i, p in enumerate(palette[:256]):
+            table[i] = p[c]
+        planes.append(bytes(table))
+    idx = bytes(indices)
+    out = bytearray(len(idx) * 3)
+    out[0::3] = idx.translate(planes[0])
+    out[1::3] = idx.translate(planes[1])
+    out[2::3] = idx.translate(planes[2])
+    return out
 
 
 def _rgb_list(rgb, n):
@@ -219,7 +242,8 @@ class ZRLEDecoder(Decoder):
         if not rle:
             if pal_size == 0:            # raw cpixels
                 n = tw * th * cp
-                fb.image_rect(tx, ty, tw, th, pc.cpix_to_rgb(data[pos:pos + n]))
+                fb.image_rect(tx, ty, tw, th,
+                              pc.cpix_to_rgb(data[pos:pos + n]))
                 return pos + n
             bits = (8 if pal_size > 16 else 4 if pal_size > 4 else
                     2 if pal_size > 2 else 1)

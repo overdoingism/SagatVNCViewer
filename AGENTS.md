@@ -111,6 +111,14 @@ Deliberate differences from upstream, kept on purpose:
 - **AutoSelect** ports CConn.cxx: bandwidth estimate per update (start
   20 Mbit/s, weight = elapsed_us*1000/1000ms capped at 20%), quality 8
   above 16 Mbit/s else 6, low colour below 256 kbit/s.
+- **No per-pixel Python loops.** Pixel work goes through C that ships
+  with Python: `bytes.translate` plus extended-slice assignment (see
+  `_unpack_indices`, `_palette_to_rgb`, `rgbx_to_rgb`, the 8 bpp
+  `to_rgb`), zlib, and Pillow for JPEG and scaling. Python may loop per
+  row, run, subrect or palette entry. What is still sequential in Python:
+  ZRLE run-length (per run), Hextile/RRE (per subrect) and Tight's
+  gradient filter (per pixel; TigerVNC's own server never sends it, but
+  TightVNC and libvncserver do).
 - **Framebuffer is packed RGB** because Tk's PPM loader takes exactly that.
   Painting = `photo put <P6 data> -to x y` per damaged rect (see
   `ViewerApp.paint`). Past `MAX_RECTS_PER_PAINT` rects, the damage is merged
