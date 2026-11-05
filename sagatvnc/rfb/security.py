@@ -77,9 +77,17 @@ class SecurityHandler:
     def __init__(self, conn):
         self.conn = conn
         self.secure = False
+        # What this session ended up using, for the title bar and the
+        # connection info: the security type that did the authentication
+        # (a VeNCrypt sub-type such as "TLSVnc" when there was one), and
+        # the TLS version and cipher if the stream is encrypted
+        self.type_name = None
+        self.tls_version = None
+        self.tls_cipher = None
 
     # -- entry point --------------------------------------------------------
     def run(self, sec_type):
+        self.type_name = enc.sec_name(sec_type)
         if sec_type == enc.SEC_NONE:
             return
         if sec_type == enc.SEC_VNC_AUTH:
@@ -137,6 +145,7 @@ class SecurityHandler:
         self.conn.log("Choosing security type %s (%d)" %
                       (enc.sec_name(chosen), chosen))
         s.write(struct.pack(">I", chosen))
+        self.type_name = enc.sec_name(chosen)
 
         if chosen == enc.SEC_NONE:
             return
@@ -180,6 +189,8 @@ class SecurityHandler:
                                else self.conn.host)
         self.conn.stream.replace_socket(sock)
         cipher = sock.cipher()
+        self.tls_version = sock.version()
+        self.tls_cipher = cipher[0] if cipher else None
         self.conn.log("TLS established: %s, %s" %
                       (sock.version(), cipher[0] if cipher else "?"))
         if not anon and not ca:

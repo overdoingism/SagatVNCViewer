@@ -162,9 +162,16 @@ whole keyboard grab off; then Windows acts on its shortcuts as in any
 program. *Save settings* keeps all of these.
 
 The title bar shows the live traffic and what the session uses, e.g.
-`UP: 0.4 KiB/s DL: 2.1 MiB/s   2560x1600 Tight+JPEG 24bit` (remote size,
-the encodings of the last update, color depth). Turn it off with *Traffic
-in title bar* or `-TitleStats=0`.
+`UP: 0.4 KiB/s DL: 2.1 MiB/s   2560x1600 Tight+JPEG 24bit TLSVnc TLSv1.2`
+(remote size, the encodings of the last update, color depth, the security
+type in use and, when the connection is encrypted, the TLS version). Turn
+it off with *Traffic in title bar* or `-TitleStats=0`. *Connection info*
+also names the TLS cipher and whether the server's certificate was
+checked.
+
+The security type is negotiated once, when connecting (RFB has no way to
+change it during a session); `SecurityTypes` decides which ones are
+allowed.
 
 *Save settings* writes what you changed in the menu back to the
 `.tigervnc` file the session was opened from (or asks where, if there was

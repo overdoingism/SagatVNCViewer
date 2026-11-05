@@ -143,6 +143,22 @@ class ConnectionHandler:
 STATS_MS = 1000        # title bar statistics refresh
 
 
+def security_summary(sec):
+    """For Connection info: "TLSVnc, TLSv1.2 (ECDHE-...), encrypted"."""
+    if sec is None or not sec.type_name:
+        return "-"
+    text = sec.type_name
+    if sec.tls_version:
+        text += ", %s (%s)" % (sec.tls_version, sec.tls_cipher or "?")
+        # Anonymous TLS encrypts too, but nobody checked the server's
+        # identity (sec.secure is False then, as upstream's isSecure())
+        text += ", encrypted" if sec.secure else \
+            ", encrypted, server not verified"
+    else:
+        text += ", not encrypted"
+    return text
+
+
 def menu_key_vk(name):
     """Windows virtual key of a MenuKey keysym name (F1-F24), else None."""
     if name and name[0] == "F" and name[1:].isdigit() and \
@@ -560,6 +576,11 @@ class ViewerApp:
             if c.last_update_encodings:
                 info += " " + c.last_update_encodings
             info += " %dbit" % c.pf.depth
+            sec = c.security
+            if sec and sec.type_name:
+                info += " " + sec.type_name
+                if sec.tls_version:
+                    info += " " + sec.tls_version
             parts += [self.traffic_text, info]
         if self.title_note and time.monotonic() < self.title_note[1]:
             parts.append("(%s)" % self.title_note[0])
@@ -1777,7 +1798,7 @@ class ViewerApp:
                  if c.last_encoding is not None else "-",
                  "yes (Rust)" if accel.lib else "no (pure Python)",
                  c.version[0], c.version[1],
-                 "encrypted" if sec and sec.secure else "not encrypted",
+                 security_summary(sec),
                  c.stream.bytes_received))
         messagebox.showinfo("VNC connection info", info, parent=self.root)
 

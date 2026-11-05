@@ -133,6 +133,28 @@ class TitleStatsTest(Base):
         self.assertEqual(self.conn.last_update_encodings, "CopyRect")
         self.assertGreater(self.conn.stream.bytes_sent, sent)
 
+    def test_security_shown(self):
+        self.session()                       # SecurityTypes=None
+        self.assertEqual(self.conn.security.type_name, "None")
+        self.assertIsNone(self.conn.security.tls_version)
+
+    def test_security_summary(self):
+        from types import SimpleNamespace as NS
+        from sagatvnc.viewer.app import security_summary
+        self.assertEqual(security_summary(None), "-")
+        self.assertEqual(security_summary(NS(
+            type_name="VncAuth", tls_version=None, tls_cipher=None,
+            secure=False)), "VncAuth, not encrypted")
+        self.assertEqual(security_summary(NS(
+            type_name="TLSVnc", tls_version="TLSv1.2",
+            tls_cipher="ADH-AES256-GCM-SHA384", secure=False)),
+            "TLSVnc, TLSv1.2 (ADH-AES256-GCM-SHA384), encrypted, "
+            "server not verified")
+        self.assertEqual(security_summary(NS(
+            type_name="X509Vnc", tls_version="TLSv1.3",
+            tls_cipher="TLS_AES_256_GCM_SHA384", secure=True)),
+            "X509Vnc, TLSv1.3 (TLS_AES_256_GCM_SHA384), encrypted")
+
     def test_rust_switch(self):
         from sagatvnc.rfb import accel
         was = accel.lib

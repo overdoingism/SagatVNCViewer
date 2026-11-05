@@ -208,6 +208,7 @@ class SecurityTest(unittest.TestCase):
         self.addCleanup(b.close)
         conn = Connection(a, "t", RecordingHandler(), ConnectionOptions(
             security_types=parse_security_types(sec)))
+        self.conn = conn
         result = {}
 
         def run():
@@ -240,6 +241,9 @@ class SecurityTest(unittest.TestCase):
         err, chosen = self.run_client(server, "None,X509Plain")
         self.assertEqual(chosen, 1)
         self.assertIsInstance(err, AuthFailure)
+        # What the title bar shows: the sub-type, no TLS
+        self.assertEqual(self.conn.security.type_name, "None")
+        self.assertIsNone(self.conn.security.tls_version)
 
     def test_unknown_security_result(self):
         def server(b):
