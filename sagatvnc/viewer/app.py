@@ -143,6 +143,14 @@ class ConnectionHandler:
 STATS_MS = 1000        # title bar statistics refresh
 
 
+def menu_key_vk(name):
+    """Windows virtual key of a MenuKey keysym name (F1-F24), else None."""
+    if name and name[0] == "F" and name[1:].isdigit() and \
+            1 <= int(name[1:]) <= 24:
+        return 0x6F + int(name[1:])
+    return None
+
+
 def format_rate(bytes_per_second):
     """Bytes per second as KiB/s or MiB/s, one decimal."""
     if bytes_per_second >= 1024 * 1024:
@@ -192,8 +200,6 @@ class ViewerApp:
         self.pointer_job = None
         self.resize_job = None
         self.last_clipboard = None
-        self.ctrl_var = tk.BooleanVar(value=False)
-        self.alt_var = tk.BooleanVar(value=False)
         self.fullscreen_var = tk.BooleanVar(value=False)
         self.viewonly_var = tk.BooleanVar(value=bool(options.viewonly))
         self.desktop_size_sent = False
@@ -942,14 +948,19 @@ class ViewerApp:
         return int(self.root.wm_frame(), 16)
 
     def grab_keyboard(self):
-        if not syskeys.available() or not self.system_keys_var.get() or \
-                self.view_only() or not self.canvas:
+        """While the desktop has focus (Windows): system keys to the
+        server if wanted, and the menu key closes the menu again."""
+        if not syskeys.available() or not self.canvas:
             return
         if self.key_grab is None:
             self.key_grab = syskeys.SystemKeyGrab(self._frame_hwnd(),
                                                   self.key_policy, log)
-        self.key_grab.set_window(self._frame_hwnd())
-        self.key_grab.start()
+        g = self.key_grab
+        g.set_window(self._frame_hwnd())
+        g.swallow = bool(self.system_keys_var.get()) and \
+            not self.view_only()
+        g.menu_vk = menu_key_vk(self.opts.menukey)
+        g.start()
 
     def ungrab_keyboard(self):
         if self.key_grab:
@@ -961,11 +972,8 @@ class ViewerApp:
         p.pass_print = self.pass_print_var.get()
         p.pass_alt_tab = self.pass_alt_tab_var.get()
         p.pass_win = self.pass_win_var.get()
-        if self.system_keys_var.get():
-            if self.has_focus:
-                self.grab_keyboard()
-        else:
-            self.ungrab_keyboard()
+        if self.has_focus:
+            self.grab_keyboard()
         state = "normal" if self.system_keys_var.get() and \
             syskeys.available() else "disabled"
         for i in self.grab_dependent_entries:
@@ -981,6 +989,8 @@ class ViewerApp:
     def _menu_key_changed(self):
         key = self.menukey_var.get()
         self.opts.menukey = key
+        if self.key_grab:
+            self.key_grab.menu_vk = menu_key_vk(key)
         if self.send_menu_key_index is not None:
             self.menu.entryconfigure(self.send_menu_key_index,
                                      label="Send %s" % key)
@@ -1034,12 +1044,6 @@ class ViewerApp:
         self.flush_pending_clipboard()
         # Lock keys may have got out of sync while we didn't have focus
         self.push_led_state()
-        # Resend the menu's Ctrl/Alt if they are still on
-        if not self.view_only():
-            if self.ctrl_var.get():
-                self._key_pressed(FAKE_CTRL_KEY_CODE, 0x1D, NAMED["Control_L"])
-            if self.alt_var.get():
-                self._key_pressed(FAKE_ALT_KEY_CODE, 0x38, NAMED["Alt_L"])
 
     # -- lock key LEDs (Viewport::setLEDState / pushLEDState) -----------------
     def set_led_state(self, state):
@@ -1409,14 +1413,10 @@ class ViewerApp:
                             command=self.apply_local_ime,
                             state="normal" if sys.platform == "win32"
                             else "disabled")
-        self._build_keys_menu(submenu("Keyboard"))
         m.add_separator()
 
-        # -- keys
-        m.add_checkbutton(label="Ctrl", variable=self.ctrl_var,
-                          command=lambda: self._toggle_mod("ctrl"))
-        m.add_checkbutton(label="Alt", variable=self.alt_var,
-                          command=lambda: self._toggle_mod("alt"))
+        # -- keyboard: where keys go, and keys you can't press here
+        self._build_keys_menu(submenu("Keyboard"))
         if self.opts.menukey:
             m.add_command(label="Send %s" % self.opts.menukey,
                           command=self.send_menu_key)
@@ -1456,7 +1456,7 @@ class ViewerApp:
         sub.add_separator()
         win = "normal" if syskeys.available() else "disabled"
         sub.add_checkbutton(label="Send system keys to remote "
-                            "(all but Ctrl+Alt+Del)",
+                            "(Ctrl+Alt+Del and Win+L excluded)",
                             variable=self.system_keys_var,
                             command=self._keys_changed, state=win)
         self.grab_dependent_entries = []
@@ -1482,22 +1482,6 @@ class ViewerApp:
             self.menu.tk_popup(x, y)
         finally:
             self.menu.grab_release()
-
-    def _toggle_mod(self, which):
-        """ID_CTRL / ID_ALT: fake key codes, so they're released on
-        focus loss and pressed again on focus (see on_focus_in)."""
-        if which == "ctrl":
-            var, code, key_code, ks = (self.ctrl_var, FAKE_CTRL_KEY_CODE,
-                                       0x1D, NAMED["Control_L"])
-        else:
-            var, code, key_code, ks = (self.alt_var, FAKE_ALT_KEY_CODE,
-                                       0x38, NAMED["Alt_L"])
-        if self.view_only():
-            return
-        if var.get():
-            self._key_pressed(code, key_code, ks)
-        else:
-            self._key_released(code)
 
     def _picture_changed(self, manual=False):
         """Apply the Compression settings from the menu, like
@@ -1709,8 +1693,7 @@ class ViewerApp:
     def _view_only_changed(self):
         if self.view_only():
             self.release_all_keys()
-            self.ungrab_keyboard()
-        elif self.has_focus:
+        if self.has_focus:
             self.grab_keyboard()
 
     def send_menu_key(self):
@@ -1729,15 +1712,15 @@ class ViewerApp:
     def send_cad(self):
         if self.view_only():
             return
-        # ID_CTRLALTDEL; leaves the menu's own Ctrl/Alt alone
+        # ID_CTRLALTDEL.  Upstream's menu also has latching Ctrl and Alt
+        # items (ID_CTRL / ID_ALT); dropped here at the owner's request,
+        # since every key combination can now be typed directly.
         self._key_pressed(FAKE_CTRL_KEY_CODE, 0x1D, NAMED["Control_L"])
         self._key_pressed(FAKE_ALT_KEY_CODE, 0x38, NAMED["Alt_L"])
         self._key_pressed(FAKE_DEL_KEY_CODE, 0xD3, NAMED["Delete"])
         self._key_released(FAKE_DEL_KEY_CODE)
-        if not self.alt_var.get():
-            self._key_released(FAKE_ALT_KEY_CODE)
-        if not self.ctrl_var.get():
-            self._key_released(FAKE_CTRL_KEY_CODE)
+        self._key_released(FAKE_ALT_KEY_CODE)
+        self._key_released(FAKE_CTRL_KEY_CODE)
 
     def refresh(self):
         try:

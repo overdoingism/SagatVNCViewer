@@ -121,6 +121,41 @@ class KeyPolicyTest(unittest.TestCase):
         p.pass_win = True
         self.assertEqual(self.press(p, VK_LWIN)[0], BLOCK)
 
+    def test_menu_key_vk(self):
+        from sagatvnc.viewer.app import menu_key_vk
+        self.assertEqual(menu_key_vk("F8"), 0x77)
+        self.assertEqual(menu_key_vk("F7"), 0x76)
+        self.assertEqual(menu_key_vk("F12"), 0x7B)
+        for name in ("", "Pause", "F", "F0", "F25"):
+            self.assertIsNone(menu_key_vk(name), name)
+
+    @unittest.skipUnless(syskeys.available(), "Windows only")
+    def test_menu_key_closes_the_open_menu(self):
+        posted = []
+
+        class User32:
+            def PostMessageW(self, *args):
+                posted.append(args)
+
+        g = syskeys.SystemKeyGrab(0, KeyPolicy())
+        g.u = User32()
+        g.menu_vk = 0x77
+        menu = {"owner": None}
+        g._menu_owner = lambda: menu["owner"]
+        # The press that opens the menu goes on to Tk as usual
+        self.assertFalse(g._menu_key(0x77, False))
+        menu["owner"] = 1234                 # the menu is now open
+        self.assertTrue(g._menu_key(0x77, False))   # auto-repeat: eaten
+        self.assertEqual(posted, [])
+        self.assertFalse(g._menu_key(0x77, True))   # its release
+        # A new press closes it, and its release is eaten too
+        self.assertTrue(g._menu_key(0x77, False))
+        self.assertEqual(posted, [(1234, syskeys.WM_CANCELMODE, 0, 0)])
+        menu["owner"] = None
+        self.assertTrue(g._menu_key(0x77, True))
+        # Other keys are not its business
+        self.assertFalse(g._menu_key(0x78, False))
+
     def test_win32_part_only_on_windows(self):
         import sys
         self.assertEqual(syskeys.available(), sys.platform == "win32")

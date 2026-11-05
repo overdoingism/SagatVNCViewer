@@ -124,7 +124,8 @@ straight to the server, and you type Chinese/Japanese/Korean with the
 desktop. Turn it back on with *Local input method* in the F8 menu, or
 `-LocalInputMethod`.
 
-Press **F8** (`-MenuKey`) inside the session to open the popup menu:
+Press **F8** (`-MenuKey`) inside the session to open the popup menu, and
+again (or Esc) to close it:
 
 - Disconnect
 - Window: full screen, resize window to session, *When the window is
@@ -132,9 +133,9 @@ Press **F8** (`-MenuKey`) inside the session to open the popup menu:
 - *Picture quality*: automatic (recommended), encoding, color depth,
   JPEG (Tight only), zlib level (Tight and ZRLE)
 - *Input*: view only, remote cursor shape, local input method (IME)
-- *Keyboard*: menu key (F7-F12), and which special keys go to the remote
-  computer (see below)
-- Keys: Ctrl, Alt, Send F8, Send Ctrl-Alt-Del; refresh screen
+- *Keyboard* (menu key F7-F12, and which special keys go to the remote
+  computer, see below), Send F8, Send Ctrl-Alt-Del
+- Refresh screen
 - Save settings, Save settings as...
 - *Rust decoders*: ticked when the native decoders are loaded (untick to
   compare with the Python code); otherwise it says why they are not

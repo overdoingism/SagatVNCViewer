@@ -74,7 +74,13 @@ Deliberate differences from upstream, kept on purpose:
   are refused on pre-3.8 servers, as in `setPF()`.
 - F8 popup menu (`MenuKey`) instead of upstream's ShortcutModifiers combos,
   which have no Windows counterpart. The owner chose this. The menu offers
-  F7-F12 (Keyboard > Menu key); any keysym works from files.
+  F7-F12 (Keyboard > Menu key); any keysym works from files. Pressing the
+  menu key again closes the menu: a Windows popup menu runs its own loop,
+  so the keyboard hook spots a fresh press while our popup is open and
+  posts WM_CANCELMODE to the menu owner (`SystemKeyGrab._menu_key`). For
+  that the hook runs whenever the desktop has focus, also with
+  `SystemKeys=0` (then `swallow` is off). Upstream's latching Ctrl/Alt
+  menu items are gone at the owner's request; Send Ctrl-Alt-Del stays.
 - **System keys** (`syskeys.py`, ports win32.cxx keyboard_hook +
   message_hook): a WH_KEYBOARD_LL hook swallows keys while the desktop
   window is foreground with no menu open, and reposts them as WM_KEYDOWN

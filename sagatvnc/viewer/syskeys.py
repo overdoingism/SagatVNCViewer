@@ -33,6 +33,10 @@ Differences from upstream (SagatVNC):
 
 Ctrl+Alt+Del never reaches any hook, and Windows handles Win+L itself:
 those always act locally (use F8 > Send Ctrl-Alt-Del).
+
+The hook also closes the F8 menu when the menu key is pressed again (a
+Windows popup menu runs its own loop and never shows Tk that key), so it
+runs while the desktop has focus even when ``swallow`` is off.
 """
 
 import sys
@@ -124,6 +128,7 @@ WH_KEYBOARD_LL, WH_GETMESSAGE = 13, 3
 WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP = 0x100, 0x101, 0x104, \
     0x105
 WM_QUIT = 0x12
+WM_CANCELMODE = 0x1F
 LLKHF_EXTENDED, LLKHF_INJECTED, LLKHF_ALTDOWN, LLKHF_UP = 0x01, 0x10, \
     0x20, 0x80
 GUI_INMOVESIZE, GUI_INMENUMODE, GUI_SYSTEMMENUMODE, GUI_POPUPMENUMODE = \
@@ -169,6 +174,10 @@ class SystemKeyGrab:
         self.msg_hook = None
         self.gui_thread = None
         self.was_active = False
+        self.swallow = True        # send system keys to the server
+        self.menu_vk = None        # the F8 menu's key, to close it again
+        self.menu_key_down = False
+        self.swallow_menu_release = False
         self._setup_api()
 
     # -- ctypes declarations ------------------------------------------------
@@ -318,6 +327,41 @@ class SystemKeyGrab:
         self.focus_hwnd = info.hwndFocus
         return bool(info.hwndFocus)
 
+    def _menu_owner(self):
+        """The window whose popup menu is open, if one of ours is."""
+        u = self.u
+        fg = u.GetForegroundWindow()
+        if not fg or u.GetWindowThreadProcessId(fg, None) != \
+                self.gui_thread:
+            return None
+        info = self.GUITHREADINFO()
+        info.cbSize = self.ct.sizeof(info)
+        if not u.GetGUIThreadInfo(self.gui_thread, self.ct.byref(info)):
+            return None
+        if info.flags & GUI_POPUPMENUMODE:
+            return info.hwndMenuOwner
+        return None
+
+    def _menu_key(self, vk, up):
+        """The menu key while our menu is open: a new press closes the
+        menu (WM_CANCELMODE ends menu tracking).  -> swallow it?"""
+        if vk != self.menu_vk:
+            return False
+        was_down = self.menu_key_down
+        self.menu_key_down = not up
+        if up:
+            if self.swallow_menu_release:
+                self.swallow_menu_release = False
+                return True
+            return False
+        owner = self._menu_owner()
+        if not owner:
+            return False
+        if not was_down:           # not the auto-repeat of the opening press
+            self.u.PostMessageW(owner, WM_CANCELMODE, 0, 0)
+            self.swallow_menu_release = True
+        return True
+
     def _held_keys(self):
         gaks = self.u.GetAsyncKeyState
         return [vk for vk in range(1, 256) if gaks(vk) & 0x8000]
@@ -325,13 +369,16 @@ class SystemKeyGrab:
     def _keyboard_hook(self, code, wparam, lparam):
         try:
             if code >= 0:
-                active = self._active()
+                ks = self.KBDLLHOOKSTRUCT.from_address(lparam)
+                up = bool(ks.flags & LLKHF_UP)
+                if not ks.flags & LLKHF_INJECTED and \
+                        self._menu_key(ks.vkCode, up):
+                    return 1
+                active = self.swallow and self._active()
                 if active and not self.was_active:
                     self.policy.reset(self._held_keys())
                 self.was_active = active
                 if active:
-                    ks = self.KBDLLHOOKSTRUCT.from_address(lparam)
-                    up = bool(ks.flags & LLKHF_UP)
                     how, replay = self.policy.decide(
                         ks.vkCode, up, bool(ks.flags & LLKHF_INJECTED))
                     if replay:
