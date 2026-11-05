@@ -39,7 +39,8 @@ GAP = 10              # between rows
 HEADER_ICON = 48      # header logo size (one of icon_data.PNGS)
 ENTRY_WIDTH = 34      # characters
 SECURE_COLOUR = "#1e7b34"
-INSECURE_COLOUR = "#b3541e"
+CAUTION_COLOUR = "#9a6700"
+INSECURE_COLOUR = "#c5221f"
 HINT_COLOUR = "#5f6368"
 
 
@@ -51,6 +52,7 @@ def _styles(widget):
                     font=(base["family"], base["size"] + 4, "bold"))
     style.configure("Hint.TLabel", foreground=HINT_COLOUR)
     style.configure("Secure.TLabel", foreground=SECURE_COLOUR)
+    style.configure("Caution.TLabel", foreground=CAUTION_COLOUR)
     style.configure("Insecure.TLabel", foreground=INSECURE_COLOUR)
     style.configure("Bar.TFrame", background=_bar_colour(widget))
     style.configure("Bar.TButton", padding=(14, 4))
@@ -212,11 +214,32 @@ class ServerDialog(_Modal):
         self.destroy()
 
 
+def security_banner(secure, security):
+    """(label style, text) for the login dialog.
+
+    ``secure``: the server's identity was verified (upstream's
+    isSecure()); ``security``: (type name, TLS version or None).
+    """
+    tls = bool(security and security[1])
+    if secure:
+        return ("Secure.TLabel",
+                "\u2714  Encrypted, server identity verified")
+    if tls:
+        # Anonymous TLS: nobody can read along, but nobody checked who is
+        # at the other end either
+        return ("Caution.TLabel",
+                "\u26a0  Encrypted, but the server's identity is not "
+                "verified")
+    return ("Insecure.TLabel",
+            "\u26a0  Not encrypted: the screen and your keys travel in "
+            "plain text")
+
+
 class AuthDialog(_Modal):
     """AuthDialog.cxx: username and password."""
 
     def __init__(self, parent, need_username, secure, host,
-                 offer_keep=False):
+                 offer_keep=False, security=None):
         super().__init__(parent, "VNC authentication")
         self.header("Password required" if not need_username else
                     "Sign in", "Server: %s" % host)
@@ -244,12 +267,16 @@ class AuthDialog(_Modal):
                             variable=self.keep).grid(
                 row=row, column=1, sticky="w", pady=(GAP, 0))
             row += 1
-        # Upstream shows this as a coloured banner
-        ttk.Label(frame, style="Secure.TLabel" if secure else
-                  "Insecure.TLabel",
-                  text="\u25cf  This connection is encrypted" if secure else
-                  "\u25cf  This connection is not encrypted").grid(
+        # Upstream shows a coloured "secure / not secure" banner; here it
+        # tells the three cases apart, plus the security type in use
+        style, text = security_banner(secure, security)
+        ttk.Label(frame, style=style, text=text).grid(
             row=row, column=0, columnspan=2, sticky="w", pady=(PAD - 4, 0))
+        row += 1
+        if security and security[0]:
+            ttk.Label(frame, style="Hint.TLabel",
+                      text=" · ".join(p for p in security if p)).grid(
+                row=row, column=0, columnspan=2, sticky="w", pady=(2, 0))
         self.button_bar([("Cancel", self.cancel), ("OK", self.ok)])
         # The username field only when it still needs typing (it is
         # prefilled with the local user name); otherwise the password

@@ -155,6 +155,21 @@ class TitleStatsTest(Base):
             tls_cipher="TLS_AES_256_GCM_SHA384", secure=True)),
             "X509Vnc, TLSv1.3 (TLS_AES_256_GCM_SHA384), encrypted")
 
+    def test_login_dialog_security_banner(self):
+        from sagatvnc.viewer.dialogs import security_banner
+        style, text = security_banner(True, ("X509Vnc", "TLSv1.3"))
+        self.assertEqual(style, "Secure.TLabel")
+        self.assertTrue(text.startswith("✔"))
+        # Anonymous TLS: encrypted, identity unknown
+        style, text = security_banner(False, ("TLSVnc", "TLSv1.2"))
+        self.assertEqual(style, "Caution.TLabel")
+        self.assertTrue(text.startswith("⚠  Encrypted"))
+        # No TLS at all: the warning sign, in red
+        for sec in (("VncAuth", None), None):
+            style, text = security_banner(False, sec)
+            self.assertEqual(style, "Insecure.TLabel")
+            self.assertTrue(text.startswith("⚠  Not encrypted"))
+
     def test_rust_switch(self):
         from sagatvnc.rfb import accel
         was = accel.lib

@@ -449,11 +449,13 @@ class ViewerApp:
             except OSError as e:
                 raise OSError("Failed to open \"%s\": %s" %
                               (self.opts.passwordfile, e.strerror or e))
-        secure = bool(self.conn.security and self.conn.security.secure)
+        sec = self.conn.security
+        secure = bool(sec and sec.secure)
         res = dialogs.AuthDialog(self.root, need_username, secure,
                                  self.host,
-                                 offer_keep=bool(self.opts.reconnectonerror)
-                                 ).run()
+                                 offer_keep=bool(self.opts.reconnectonerror),
+                                 security=(sec.type_name, sec.tls_version)
+                                 if sec else None).run()
         if res is None:
             raise Cancelled()
         user, password, keep = res
