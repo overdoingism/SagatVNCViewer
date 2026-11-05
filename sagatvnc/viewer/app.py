@@ -54,6 +54,11 @@ def log(msg):
           flush=True)
 
 
+class SwitchSecurity(Exception):
+    """The user picked another security type in the login dialog: drop
+    this connection and reconnect with it."""
+
+
 class Cancelled(Exception):
     pass
 
@@ -210,6 +215,9 @@ class ViewerApp:
         self.expected_window = None
         self.ready_tries = 0
         self.saved_credentials = None
+        # One-shot credentials carried over a security switch
+        self.pending_credentials = None
+        self.preferred_security = None       # set by connection_options
         self.button_mask = 0
         self.pending_pointer = None
         self.last_pointer_time = 0.0
@@ -361,6 +369,15 @@ class ViewerApp:
         co = ConnectionOptions()
         co.shared = bool(o.shared)
         co.security_types = parse_security_types(o.securitytypes, log)
+        pref = o.preferredsecurity.strip()
+        chosen = getattr(self, "preferred_security", None)
+        if chosen is None and pref:
+            chosen = next((v for k, v in enc.SEC_NAMES.items()
+                           if k.lower() == pref.lower()), None)
+            if chosen is None:
+                log("Unknown PreferredSecurity %r, ignored" % pref)
+            self.preferred_security = chosen
+        co.preferred_security = chosen
         co.x509_ca = o.x509ca
         co.known_hosts = os.path.join(config_dir(), "x509_known_hosts")
         co.auto_select = bool(o.autoselect)
@@ -407,6 +424,8 @@ class ViewerApp:
             self.handler.events.put(("closed", None))
         except Cancelled:
             self.handler.events.put(("closed", "cancelled"))
+        except SwitchSecurity as e:
+            self.handler.events.put(("switch", e.args[0]))
         except AuthFailure as e:
             self.saved_credentials = None
             self.handler.events.put(("error", "Failed to authenticate with "
@@ -441,6 +460,9 @@ class ViewerApp:
         saved = self.saved_credentials
         if saved and (saved[0] or not need_username):
             return saved
+        pending, self.pending_credentials = self.pending_credentials, None
+        if pending and (pending[0] or not need_username):
+            return pending
         if not need_username and self.opts.passwordfile:
             try:
                 with open(os.path.expanduser(self.opts.passwordfile),
@@ -451,14 +473,24 @@ class ViewerApp:
                               (self.opts.passwordfile, e.strerror or e))
         sec = self.conn.security
         secure = bool(sec and sec.secure)
-        res = dialogs.AuthDialog(self.root, need_username, secure,
-                                 self.host,
-                                 offer_keep=bool(self.opts.reconnectonerror),
-                                 security=(sec.type_name, sec.tls_version)
-                                 if sec else None).run()
+        res = dialogs.AuthDialog(
+            self.root, need_username, secure, self.host,
+            offer_keep=bool(self.opts.reconnectonerror),
+            security=(sec.type_name, sec.tls_version) if sec else None,
+            choices=[(t, enc.sec_name(t))
+                     for t in self.conn.security_choices],
+            current=sec.type_num if sec else None).run()
         if res is None:
             raise Cancelled()
-        user, password, keep = res
+        user, password, keep, switch = res
+        if switch is not None:
+            # Takes effect for this session and is saved by Save settings;
+            # what was typed is used for the new connection
+            self.preferred_security = switch
+            self.conn_options.preferred_security = switch
+            if password:
+                self.pending_credentials = (user, password)
+            raise SwitchSecurity(switch)
         if keep:
             self.saved_credentials = (user, password)
         return user, password
@@ -510,6 +542,12 @@ class ViewerApp:
                     self.set_desktop_size_done(ev[1])
                 elif kind == "error":
                     self.fatal(ev[1])
+                    return
+                elif kind == "switch":
+                    log("Reconnecting with security type %s" %
+                        enc.sec_name(ev[1]))
+                    self.conn.close()
+                    self.reconnect()
                     return
                 elif kind == "closed":
                     if ev[1] != "cancelled":
@@ -1548,6 +1586,8 @@ class ViewerApp:
         o.scaling = "Auto" if self.scaling_var.get() else "Off"
         o.remoteresize = bool(self.remote_resize_var.get())
         o.titlestats = bool(self.title_stats_var.get())
+        o.preferredsecurity = enc.sec_name(self.preferred_security) \
+            if self.preferred_security is not None else ""
         o.menukey = self.menukey_var.get()
         o.systemkeys = bool(self.system_keys_var.get())
         o.passprintscreen = bool(self.pass_print_var.get())

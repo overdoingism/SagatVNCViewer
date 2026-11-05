@@ -169,9 +169,21 @@ it off with *Traffic in title bar* or `-TitleStats=0`. *Connection info*
 also names the TLS cipher and whether the server's certificate was
 checked.
 
-The security type is negotiated once, when connecting (RFB has no way to
-change it during a session); `SecurityTypes` decides which ones are
-allowed.
+### Security type
+
+The server lists the security types it accepts; the viewer picks one of
+those that `SecurityTypes` allows. It takes the **safest**: X509 (encrypted,
+server verified) before TLS (encrypted only) before VncAuth/Plain/None
+(not encrypted), the stronger login first within each. TigerVNC instead
+takes the server's first, so a server listing None first gets an
+unencrypted session.
+
+When the server offers more than one, the login dialog has a *Security*
+list with the one in use selected. Pick another and OK becomes
+*Reconnect*: the viewer reconnects with it, reusing what you typed.
+`PreferredSecurity` remembers the pick (*Save settings* keeps it). The
+security type can only change by reconnecting; RFB negotiates it once per
+connection.
 
 *Save settings* writes what you changed in the menu back to the
 `.tigervnc` file the session was opened from (or asks where, if there was

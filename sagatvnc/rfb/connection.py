@@ -72,6 +72,9 @@ class ConnectionOptions:
     known_hosts: str = ""
     auto_select: bool = True
     preferred_encoding: int = enc.TIGHT
+    # A security type the user picked (login dialog); used when the server
+    # offers it, otherwise the safest one is (SagatVNC)
+    preferred_security: int = None
     custom_compress_level: bool = False
     compress_level: int = 2
     full_colour: bool = True
@@ -121,6 +124,9 @@ class Connection:
         self.name = ""
         self.version = (3, 8)
         self.security = None
+        # Every security type this server offered that we could use, safest
+        # first (for the login dialog's choice)
+        self.security_choices = []
         self.decoders = make_decoders()
         self.closed = False
         self.last_encoding = None
@@ -177,6 +183,41 @@ class Connection:
 
     def get_credentials(self, need_username):
         return self.handler.get_credentials(need_username)
+
+    def choose_security(self, ranked):
+        """Ask the user which security type to use (safest first); without
+        a ``choose_security`` handler, take the safest."""
+        ask = getattr(self.handler, "choose_security", None)
+        return ask(ranked) if ask else ranked[0]
+
+    def add_security_choices(self, types):
+        from .security import safety_rank
+        merged = list(dict.fromkeys(self.security_choices + list(types)))
+        self.security_choices = sorted(merged, key=safety_rank)
+
+    def _choose_top_level(self, candidates):
+        """The first message's choice.  VeNCrypt's sub-types are only
+        listed after choosing it, so it counts as the safest sub-type we
+        allow; if it beats the rest it is taken without asking, and the
+        question (if any) comes with its sub-types."""
+        from .security import choose_security, safety_rank
+        self.add_security_choices(t for t in candidates
+                                  if t != enc.SEC_VENCRYPT)
+        pref = self.options.preferred_security
+        if pref is not None:
+            if pref in candidates and pref != enc.SEC_VENCRYPT:
+                return pref
+            if enc.SEC_VENCRYPT in candidates:
+                return enc.SEC_VENCRYPT    # maybe one of its sub-types
+        if enc.SEC_VENCRYPT in candidates:
+            ext = [t for t in self.options.security_types if t >= 0x100]
+            best_ext = min((safety_rank(t) for t in ext), default=None)
+            others = [t for t in candidates if t != enc.SEC_VENCRYPT]
+            if best_ext is not None and (not others or best_ext < min(
+                    safety_rank(t) for t in others)):
+                return enc.SEC_VENCRYPT
+            candidates = others or candidates
+        return choose_security(self, candidates)
 
     def verify_certificate(self, info):
         return self.handler.verify_certificate(info)
@@ -290,12 +331,14 @@ class Connection:
             if n == 0:
                 raise ProtocolError(self._read_reason())
             offered = list(s.read(n))
-            # The server's order specifies priority
-            sec = next((t for t in offered if t in enabled), None)
-            if sec is None:
+            self.log("Server offers security types %s" %
+                     ", ".join(enc.sec_name(t) for t in offered))
+            candidates = [t for t in offered if t in enabled]
+            if not candidates:
                 raise SecurityError(
                     "No matching security types (server offers %s)" %
                     ", ".join(enc.sec_name(t) for t in offered))
+            sec = self._choose_top_level(candidates)
             s.write(bytes([sec]))
         self.log("Choosing security type %s (%d)" % (enc.sec_name(sec), sec))
 

@@ -15,6 +15,7 @@ import tkinter as tk
 from tkinter import font as tkfont, ttk
 
 from .. import __version__
+from ..rfb.security import describe as describe_security
 from . import icon
 from .win32 import bring_to_front
 
@@ -116,11 +117,13 @@ class _Modal(tk.Toplevel):
         for text, command in left:
             ttk.Button(bar, text=text, command=command,
                        style="Bar.TButton").pack(side="left")
+        self.buttons = {}
         for i, (text, command) in enumerate(reversed(buttons)):
             b = ttk.Button(bar, text=text, command=command,
                            style="Bar.TButton",
                            default="active" if i == 0 else "normal")
             b.pack(side="right", padx=(8, 0) if i else 0)
+            self.buttons[text] = b
         return bar
 
     def run(self):
@@ -214,6 +217,15 @@ class ServerDialog(_Modal):
         self.destroy()
 
 
+def security_choice_label(name, num):
+    """How a security type reads in the login dialog's list."""
+    encryption, _ = describe_security(num)
+    what = {"x509": "encrypted, server verified",
+            "tls": "encrypted, server not verified"}.get(encryption,
+                                                         "not encrypted")
+    return "%s  (%s)" % (name, what)
+
+
 def security_banner(secure, security):
     """(label style, text) for the login dialog.
 
@@ -239,7 +251,10 @@ class AuthDialog(_Modal):
     """AuthDialog.cxx: username and password."""
 
     def __init__(self, parent, need_username, secure, host,
-                 offer_keep=False, security=None):
+                 offer_keep=False, security=None, choices=(), current=None):
+        """``choices``: (number, name) of the security types this server
+        offered that we could use, safest first; ``current`` is the one in
+        use.  Picking another makes OK reconnect with it (SagatVNC)."""
         super().__init__(parent, "VNC authentication")
         self.header("Password required" if not need_username else
                     "Sign in", "Server: %s" % host)
@@ -267,16 +282,42 @@ class AuthDialog(_Modal):
                             variable=self.keep).grid(
                 row=row, column=1, sticky="w", pady=(GAP, 0))
             row += 1
+        # The security in use, and the others this server offers
+        self.choices = list(choices)
+        self.current = current
+        self.secure = secure
+        self.security = security
+        self.choice = tk.StringVar()
+        if len(self.choices) > 1:
+            ttk.Label(frame, text="Security:").grid(
+                row=row, column=0, sticky="w", padx=(0, 12),
+                pady=(GAP, 0))
+            labels = [security_choice_label(name, num)
+                      for num, name in self.choices]
+            combo = ttk.Combobox(frame, values=labels, state="readonly",
+                                 textvariable=self.choice,
+                                 width=ENTRY_WIDTH)
+            nums = [num for num, _ in self.choices]
+            combo.current(nums.index(current) if current in nums else 0)
+            combo.grid(row=row, column=1, sticky="we", pady=(GAP, 0))
+            combo.bind("<<ComboboxSelected>>",
+                       lambda e: self._choice_changed())
+            self.combo = combo
+            row += 1
+        else:
+            self.combo = None
         # Upstream shows a coloured "secure / not secure" banner; here it
-        # tells the three cases apart, plus the security type in use
+        # tells the three cases apart
         style, text = security_banner(secure, security)
-        ttk.Label(frame, style=style, text=text).grid(
-            row=row, column=0, columnspan=2, sticky="w", pady=(PAD - 4, 0))
+        self.banner = ttk.Label(frame, style=style, text=text)
+        self.banner.grid(row=row, column=0, columnspan=2, sticky="w",
+                         pady=(PAD - 4, 0))
         row += 1
-        if security and security[0]:
-            ttk.Label(frame, style="Hint.TLabel",
-                      text=" \u00b7 ".join(p for p in security if p)).grid(
-                row=row, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        self.detail = ttk.Label(frame, style="Hint.TLabel",
+                                text=self._detail_text())
+        if self.detail["text"]:
+            self.detail.grid(row=row, column=0, columnspan=2, sticky="w",
+                             pady=(2, 0))
         self.button_bar([("Cancel", self.cancel), ("OK", self.ok)])
         # The username field only when it still needs typing (it is
         # prefilled with the local user name); otherwise the password
@@ -284,7 +325,40 @@ class AuthDialog(_Modal):
             not self.user.get() else pe
         self.need_username = need_username
 
+    def _detail_text(self):
+        if self.security and self.security[0]:
+            return " \u00b7 ".join(p for p in self.security if p)
+        return ""
+
+    def selected_security(self):
+        """The security type picked in the list, if it isn't the one in
+        use (then OK reconnects with it)."""
+        if not self.combo:
+            return None
+        num = self.choices[self.combo.current()][0]
+        return None if num == self.current else num
+
+    def _choice_changed(self):
+        """Show what the picked type would give, and that OK reconnects."""
+        other = self.selected_security()
+        if other is None:
+            style, text = security_banner(self.secure, self.security)
+            detail, ok = self._detail_text(), "OK"
+        else:
+            encryption, _ = describe_security(other)
+            style, text = security_banner(encryption == "x509",
+                                          ("", "TLS" if encryption else None))
+            name = dict(self.choices)[other]
+            detail = "OK reconnects with %s" % name
+            ok = "Reconnect"
+        self.banner.configure(style=style, text=text)
+        self.detail.configure(text=detail)
+        if detail:
+            self.detail.grid()
+        self.buttons["OK"].configure(text=ok)
+
     def ok(self):
         self.result = (self.user.get() if self.need_username else "",
-                       self.password.get(), self.keep.get())
+                       self.password.get(), self.keep.get(),
+                       self.selected_security())
         self.destroy()

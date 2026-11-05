@@ -101,6 +101,10 @@ PARAMS = [
     Param("SecurityTypes", str, enc.DEFAULT_SECURITY,
           "Specify which security scheme to use (None, VncAuth, Plain, "
           "TLSNone, TLSVnc, TLSPlain, X509None, X509Vnc, X509Plain)"),
+    Param("PreferredSecurity", str, "",
+          "Security type to use when the server offers several that "
+          "SecurityTypes allows (default: the safest). Picked in the login "
+          "dialog. SagatVNC only"),
     Param("PasswordFile", str, "", "Password file for VNC authentication",
           aliases=("passwd",)),
     Param("X509CA", str, "",

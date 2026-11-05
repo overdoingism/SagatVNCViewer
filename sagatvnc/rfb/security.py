@@ -65,6 +65,54 @@ def is_vencrypt_subtype(t):
     return t >= 256
 
 
+# Safest first: encryption with a verified server, then encryption only,
+# then none; within each, the stronger authentication first.  Plain
+# without TLS sends the password in clear text, so it ranks below VncAuth.
+SAFETY_ORDER = (enc.SEC_X509_PLAIN, enc.SEC_X509_VNC, enc.SEC_X509_NONE,
+                enc.SEC_TLS_PLAIN, enc.SEC_TLS_VNC, enc.SEC_TLS_NONE,
+                enc.SEC_VNC_AUTH, enc.SEC_PLAIN, enc.SEC_NONE)
+
+
+def safety_rank(t):
+    """0 = safest; unknown types last."""
+    try:
+        return SAFETY_ORDER.index(t)
+    except ValueError:
+        return len(SAFETY_ORDER)
+
+
+def describe(t):
+    """(encryption, authentication) of a security type:
+    encryption "x509" (verified server), "tls" (anonymous) or None;
+    authentication "none", "vnc" or "plain"."""
+    encryption = ("x509" if t in (enc.SEC_X509_NONE, enc.SEC_X509_VNC,
+                                  enc.SEC_X509_PLAIN) else
+                  "tls" if t in (enc.SEC_TLS_NONE, enc.SEC_TLS_VNC,
+                                 enc.SEC_TLS_PLAIN) else None)
+    auth = ("vnc" if t in (enc.SEC_VNC_AUTH, enc.SEC_TLS_VNC,
+                           enc.SEC_X509_VNC) else
+            "plain" if t in (enc.SEC_PLAIN, enc.SEC_TLS_PLAIN,
+                             enc.SEC_X509_PLAIN) else "none")
+    return encryption, auth
+
+
+def choose_security(conn, candidates):
+    """Pick one of ``candidates`` (offered by the server and enabled here).
+
+    Not upstream: TigerVNC takes the first in the server's order, so a
+    server listing None before TLS gets an unencrypted session.  Here the
+    safest comes first; with more than one left the user is asked
+    (``conn.choose_security``), with the safest preselected.
+    """
+    ranked = sorted(dict.fromkeys(candidates), key=safety_rank)
+    pref = getattr(conn.options, "preferred_security", None)
+    if pref in ranked:
+        return pref
+    if len(ranked) == 1:
+        return ranked[0]
+    return conn.choose_security(ranked)
+
+
 class SecurityHandler:
     """Runs the security phase on behalf of a Connection.
 
@@ -82,12 +130,14 @@ class SecurityHandler:
         # (a VeNCrypt sub-type such as "TLSVnc" when there was one), and
         # the TLS version and cipher if the stream is encrypted
         self.type_name = None
+        self.type_num = None
         self.tls_version = None
         self.tls_cipher = None
 
     # -- entry point --------------------------------------------------------
     def run(self, sec_type):
         self.type_name = enc.sec_name(sec_type)
+        self.type_num = sec_type
         if sec_type == enc.SEC_NONE:
             return
         if sec_type == enc.SEC_VNC_AUTH:
@@ -138,14 +188,19 @@ class SecurityHandler:
         # the server's order is honoured (CSecurityVeNCrypt::processMsg)
         enabled = [t for t in self.conn.options.security_types
                    if t != enc.SEC_VENCRYPT]
-        chosen = next((t for t in offered if t in enabled), None)
-        if chosen is None:
+        candidates = [t for t in offered if t in enabled]
+        if not candidates:
             raise SecurityError("No valid VeNCrypt sub-type (server offers %s)"
                                 % ", ".join(enc.sec_name(t) for t in offered))
+        self.conn.log("Server offers VeNCrypt sub-types %s" %
+                      ", ".join(enc.sec_name(t) for t in offered))
+        self.conn.add_security_choices(candidates)
+        chosen = choose_security(self.conn, candidates)
         self.conn.log("Choosing security type %s (%d)" %
                       (enc.sec_name(chosen), chosen))
         s.write(struct.pack(">I", chosen))
         self.type_name = enc.sec_name(chosen)
+        self.type_num = chosen
 
         if chosen == enc.SEC_NONE:
             return

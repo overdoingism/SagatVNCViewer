@@ -98,6 +98,17 @@ Deliberate differences from upstream, kept on purpose:
   keys go to whatever window is in front, and a replayed modifier without
   its physical release stays down system-wide. Drive
   `SystemKeyGrab._keyboard_hook` with a fake KBDLLHOOKSTRUCT instead.
+- **Security type choice** (`security.choose_security`,
+  `Connection._choose_top_level`): upstream takes the first type in the
+  server's order (processSecurityTypesMsg, CSecurityVeNCrypt); we take the
+  safest (`SAFETY_ORDER`), or `PreferredSecurity` / the login dialog's
+  pick. VeNCrypt's sub-types are only known after choosing it, so it wins
+  the first stage when an allowed sub-type could be safer than the other
+  offers. `Connection.security_choices` collects what both stages offered
+  for the dialog; picking another raises `SwitchSecurity` and the viewer
+  reconnects (`ViewerApp.reconnect`) with the pick and the typed
+  credentials (`pending_credentials`). Types without a password (None,
+  TLSNone, X509None) show no dialog, so there is nothing to switch there.
 - The cursor: the server's shape by default, togglable to the plain
   arrow (F8 menu, `RemoteCursorShape`). Every cursor encoding is always
   advertised, so the server never draws a cursor into the image. Windows'
