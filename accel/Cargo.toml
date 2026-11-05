@@ -1,0 +1,21 @@
+[package]
+name = "sagatvnc_accel"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-or-later"
+description = "Optional native decoder loops for SagatVNC Viewer (loaded with ctypes)"
+publish = false
+
+# No dependencies on purpose: std only, like the Python side.
+[dependencies]
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -7,6 +7,10 @@ TigerVNC). Standard library only. Please don't add runtime dependencies
 without asking the maintainer. Pillow, `cryptography` and the like would
 be optional extras at most.
 
+The one native part is `accel/`, an optional Rust library (the owner
+chose Rust; **no C**). It has no crate dependencies, is loaded with
+ctypes, and everything works without it.
+
 ## Layout
 ```
 sagatvnc/
@@ -20,6 +24,7 @@ sagatvnc/
     pixelformat.py     PIXEL_FORMAT + rgbx_to_rgb
     des.py             pure-Python DES for VNC auth and vncpasswd files
     stream.py          blocking buffered socket reader/writer
+    accel.py           ctypes loader for accel/ (lib is None = Python)
     encodings.py       numeric constants
   viewer/              Tk front end
     app.py             ViewerApp: desktop window, input, F8 menu, painting
@@ -34,7 +39,11 @@ sagatvnc/
     win32.py           Windows-only tweaks (local IME on/off)
     cursor.py          server cursor shape -> .cur file -> Tk cursor
     keyboard.py        KeyboardWin32 port: scan codes, AltGr, LEDs
-packaging/             PyInstaller build (build_exe.py), generated icon
+accel/                 optional Rust cdylib: the sequential decoder loops
+  src/lib.rs           tight_gradient, zrle_rle, hextile_subrects,
+                       rre_subrects (C ABI, bounds-checked, error codes)
+packaging/             PyInstaller build (build_exe.py), build_accel.py,
+                       generated icon
 tests/                 unittest; fakeserver.py = encoders + scripted server
 upstream/tigervnc/     reference checkout of TigerVNC (git-ignored)
 ```
@@ -111,14 +120,21 @@ Deliberate differences from upstream, kept on purpose:
 - **AutoSelect** ports CConn.cxx: bandwidth estimate per update (start
   20 Mbit/s, weight = elapsed_us*1000/1000ms capped at 20%), quality 8
   above 16 Mbit/s else 6, low colour below 256 kbit/s.
-- **No per-pixel Python loops.** Pixel work goes through C that ships
-  with Python: `bytes.translate` plus extended-slice assignment (see
+- **No per-pixel Python loops.** The owner's rule: Python orchestrates,
+  it doesn't run pixel algorithms. Pixel work goes through C that ships
+  with Python (`bytes.translate` plus extended-slice assignment in
   `_unpack_indices`, `_palette_to_rgb`, `rgbx_to_rgb`, the 8 bpp
-  `to_rgb`), zlib, and Pillow for JPEG and scaling. Python may loop per
-  row, run, subrect or palette entry. What is still sequential in Python:
-  ZRLE run-length (per run), Hextile/RRE (per subrect) and Tight's
-  gradient filter (per pixel; TigerVNC's own server never sends it, but
-  TightVNC and libvncserver do).
+  `to_rgb`), zlib, Pillow (JPEG, scaling), or the Rust library in
+  `accel/` for what is sequential by nature: Tight's gradient filter,
+  ZRLE run-length tiles, Hextile and RRE subrects. Python may loop per
+  row, tile or palette entry.
+  The pure-Python versions stay as the fallback (no Rust, failed load,
+  `SAGATVNC_NO_ACCEL=1`) and must give identical pixels and errors:
+  `tests/test_accel.py` decodes the same inputs both ways. Change both
+  sides together, and bump `API_VERSION` in accel.py and
+  `sagatvnc_accel_version()` in lib.rs when a signature changes. The Rust
+  functions must never panic on bad input (bounds-check, return an
+  error code); the release profile uses `panic = "abort"`.
 - **Framebuffer is packed RGB** because Tk's PPM loader takes exactly that.
   Painting = `photo put <P6 data> -to x y` per damaged rect (see
   `ViewerApp.paint`). Past `MAX_RECTS_PER_PAINT` rects, the damage is merged
@@ -187,12 +203,18 @@ Deliberate differences from upstream, kept on purpose:
 
 ## Commands
 ```bash
+python packaging\build_accel.py              # Rust decoders -> sagatvnc/rfb
 python -m unittest discover -s tests -t .   # all tests, ~0.3 s
+set SAGATVNC_NO_ACCEL=1                      # (then rerun: pure-Python path)
+cargo test --release --manifest-path accel\Cargo.toml
 # (scaler tests skip without Pillow: use .venv\Scripts\python to run them)
 python -m sagatvnc -help                     # option list
 python -m sagatvnc host:1                    # run against a real server
 .venv\Scripts\python packaging\build_exe.py  # dist\SagatVNCViewer.exe
 ```
+build_exe.py runs build_accel.py and bundles the DLL; without cargo it
+warns and builds a pure-Python exe. The log and *Connection info* say
+whether the native decoders are in use.
 The exe is `--onefile --windowed`, so `sys.stderr` is None when frozen.
 `__main__._setup_windowed_logging` redirects output to
 `%APPDATA%\SagatVNC\sagatvnc.log`, and errors must go to message boxes.

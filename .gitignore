@@ -3,6 +3,11 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+# The native decoder library: built by packaging/build_accel.py
+accel/target/
+sagatvnc/rfb/*.dll
+sagatvnc/rfb/*.so
+sagatvnc/rfb/*.dylib
 .venv/
 # Reference checkout of TigerVNC (see AGENTS.md)
 upstream/

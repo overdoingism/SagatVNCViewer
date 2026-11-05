@@ -32,6 +32,8 @@ def main():
     sys.path.insert(0, HERE)
     import make_icon
     make_icon.write_ico(icon)
+    import build_accel
+    native = build_accel.build()
 
     cmd = [
         sys.executable, "-m", "PyInstaller",
@@ -45,8 +47,11 @@ def main():
         # Nothing in the viewer needs these; keeps the exe smaller
         "--exclude-module", "unittest",
         "--exclude-module", "pydoc",
-        os.path.join(HERE, "sagatvncviewer.py"),
     ]
+    if native:
+        # Loaded from next to sagatvnc/rfb/accel.py, also when frozen
+        cmd += ["--add-binary", native + os.pathsep + "sagatvnc/rfb"]
+    cmd.append(os.path.join(HERE, "sagatvncviewer.py"))
     print(" ".join(cmd))
     return subprocess.call(cmd, cwd=ROOT)
 

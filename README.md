@@ -40,7 +40,12 @@ python -m venv .venv
 .venv\Scripts\python packaging\build_exe.py
 ```
 
-This produces a single windowed `dist\SagatVNCViewer.exe`. Because it has no
+This produces a single windowed `dist\SagatVNCViewer.exe`. If Rust
+(`cargo`) is installed, the build also compiles the native decoders in
+`accel/` and bundles them; they make Hextile, ZRLE and Tight's gradient
+filter 7-40x faster. Without Rust the exe uses the same algorithms in
+Python. `python packaging\build_accel.py` builds them for running from
+source. Because it has no
 console, it logs to `%APPDATA%\SagatVNC\sagatvnc.log` and reports errors in
 dialogs.
 
@@ -124,8 +129,8 @@ Picking an encoding, color level or quality in the menu turns it off.
 | Encoding | Compression | Good for | Costs |
 |----------|-------------|----------|-------|
 | Tight    | zlib + palette/gradient filters, JPEG for photo-like areas | almost everything, especially slow links and video/photos | JPEG is lossy (turn it off under *JPEG*); most server CPU |
-| ZRLE     | zlib + run-length on 64x64 tiles, lossless | text and UI on medium links, exact colors | no JPEG, so photos and video are big; this port's decoder is Python, slower than Tight's |
-| Hextile  | 16x16 tiles of rectangles, no zlib | fast LAN with an old or weak server | 5-50x the data of Tight/ZRLE; slow to decode here |
+| ZRLE     | zlib + run-length on 64x64 tiles, lossless | text and UI on medium links, exact colors | no JPEG, so photos and video are big |
+| Hextile  | 16x16 tiles of rectangles, no zlib | fast LAN with an old or weak server | 5-50x the data of Tight/ZRLE |
 | Raw      | none | the same machine or a 1 Gbit+ LAN | a 2560x1600 frame is 16 MB |
 
 *Compression level* (zlib, 0 fastest to 9 smallest) applies to Tight and

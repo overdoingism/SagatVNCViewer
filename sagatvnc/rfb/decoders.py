@@ -24,6 +24,7 @@ Pillow; ``JPEG_AVAILABLE`` says whether it can be requested.
 import io
 import zlib
 
+from . import accel
 from . import encodings as enc
 
 try:
@@ -76,15 +77,27 @@ class CopyRectDecoder(Decoder):
 
 
 class RREDecoder(Decoder):
+    NATIVE_MIN = 16
+
     def __init__(self, compact=False):
         self.compact = compact
 
     def decode(self, x, y, w, h, stream, fb, pc):
         count = stream.u32()
         bp = pc.bypp
-        fb.fill_rect(x, y, w, h, pc.pixel(stream.read(bp)))
+        bg = stream.read(bp)
         size = bp + (4 if self.compact else 8)
         data = stream.read(count * size)
+        # Natively, paint into a wire-format buffer and convert it once;
+        # not worth it for the few subrects of a mostly plain rectangle
+        if accel.lib and count >= self.NATIVE_MIN:
+            buf = bytearray(bg * (w * h))
+            if accel.rre_subrects(buf, w, h, bp, data, count,
+                                  self.compact) < 0:
+                raise DecodeError("RRE subrect outside of rectangle")
+            fb.image_rect(x, y, w, h, pc.to_rgb(buf))
+            return
+        fb.fill_rect(x, y, w, h, pc.pixel(bg))
         for i in range(count):
             o = i * size
             pix = pc.pixel(data[o:o + bp])
@@ -107,6 +120,9 @@ class HextileDecoder(Decoder):
     def decode(self, x, y, w, h, stream, fb, pc):
         bp = pc.bypp
         bg = fg = b"\0\0\0"
+        # Wire-format copies for the native path
+        bg_raw = fg_raw = bytes(bp)
+        native = accel.lib is not None
         for ty in range(y, y + h, 16):
             th = min(16, y + h - ty)
             for tx in range(x, x + w, 16):
@@ -117,21 +133,35 @@ class HextileDecoder(Decoder):
                                   pc.to_rgb(stream.read(tw * th * bp)))
                     continue
                 if sub & self.BG:
-                    bg = pc.pixel(stream.read(bp))
-                fb.fill_rect(tx, ty, tw, th, bg)
+                    bg_raw = stream.read(bp)
+                    bg = pc.pixel(bg_raw)
                 if sub & self.FG:
-                    fg = pc.pixel(stream.read(bp))
+                    fg_raw = stream.read(bp)
+                    fg = pc.pixel(fg_raw)
                 if not sub & self.ANY_SUBRECTS:
+                    fb.fill_rect(tx, ty, tw, th, bg)
                     continue
                 n = stream.u8()
                 coloured = sub & self.SUBRECTS_COLOURED
                 data = stream.read(n * ((bp + 2) if coloured else 2))
+                if native:
+                    tile = bytearray(bg_raw * (tw * th))
+                    fg_buf = bytearray(fg_raw)
+                    if accel.hextile_subrects(tile, tw, th, bp, data, n,
+                                              coloured, fg_buf) < 0:
+                        raise DecodeError("Invalid Hextile coordinates")
+                    fg_raw = bytes(fg_buf)
+                    fg = pc.pixel(fg_raw)
+                    fb.image_rect(tx, ty, tw, th, pc.to_rgb(tile))
+                    continue
+                fb.fill_rect(tx, ty, tw, th, bg)
                 o = 0
                 for _ in range(n):
                     if coloured:
                         # HextileDecoder.cxx: a coloured subrect also sets
                         # the foreground that later tiles inherit
-                        fg = pc.pixel(data[o:o + bp])
+                        fg_raw = data[o:o + bp]
+                        fg = pc.pixel(fg_raw)
                         o += bp
                     xy, wh = data[o], data[o + 1]
                     o += 2
@@ -202,6 +232,13 @@ def _rgb_list(rgb, n):
     return [bytes(rgb[i * 3:i * 3 + 3]) for i in range(n)]
 
 
+_ZRLE_ERRORS = {
+    accel.ERR_SHORT: "ZRLE data ended unexpectedly",
+    accel.ERR_OUTSIDE: "ZRLE run exceeds tile",
+    accel.ERR_INDEX: "ZRLE palette index out of range",
+}
+
+
 class ZRLEDecoder(Decoder):
     def __init__(self):
         self.reset()
@@ -252,6 +289,14 @@ class ZRLEDecoder(Decoder):
             return pos
 
         total = tw * th
+        if accel.lib:
+            out, pos = accel.zrle_rle(data, pos, total, cp, pal_size)
+            if pos < 0:
+                raise DecodeError(_ZRLE_ERRORS.get(pos, "ZRLE error"))
+            fb.image_rect(tx, ty, tw, th,
+                          pc.cpix_to_rgb(out) if pal_size == 0 else
+                          _palette_to_rgb(out, palette))
+            return pos
         out = bytearray(total * 3)
         i = 0
         if pal_size == 0:                # plain RLE
@@ -374,7 +419,9 @@ class TightDecoder(Decoder):
                 idx = data[:size]
             fb.image_rect(x, y, w, h, _palette_to_rgb(idx, palette))
         elif filt == self.FILTER_GRADIENT:
-            fb.image_rect(x, y, w, h, self._gradient(data, w, h))
+            fb.image_rect(x, y, w, h,
+                          accel.tight_gradient(data, w, h) if accel.lib
+                          else self._gradient(data, w, h))
         else:
             fb.image_rect(x, y, w, h, pc.tpix_to_rgb(data[:size]))
 

@@ -21,6 +21,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 
 from .. import __version__
+from ..rfb import accel
 from ..rfb import encodings as enc
 from ..rfb.connection import (Connection, ConnectionOptions,
                               DroppedBeforeSession)
@@ -1524,6 +1525,7 @@ class ViewerApp:
                 "(server default %s)\n"
                 "Requested encoding: %s\n"
                 "Last used encoding: %s\n"
+                "Native decoders: %s\n"
                 "Protocol version: %d.%d\n"
                 "Security: %s\n"
                 "Bytes received: %d" %
@@ -1540,6 +1542,7 @@ class ViewerApp:
                                    else c.options.preferred_encoding),
                  enc.encoding_name(c.last_encoding)
                  if c.last_encoding is not None else "-",
+                 "yes (Rust)" if accel.lib else "no (pure Python)",
                  c.version[0], c.version[1],
                  "encrypted" if sec and sec.secure else "not encrypted",
                  c.stream.bytes_received))
@@ -1554,4 +1557,5 @@ def main(options):
         log("DPI awareness: %s" % awareness)
     log("SagatVNC Viewer %s (Python %s, Tk %s)" %
         (__version__, sys.version.split()[0], tk.TkVersion))
+    log("Native decoders: %s" % accel.status)
     return ViewerApp(options).run()
