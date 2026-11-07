@@ -1074,9 +1074,10 @@ class Connection:
         with self.key_lock:
             entry = self.down_keys.pop(system_key_code, None)
         if entry is None:
-            return              # "Unexpected release of key code"
+            return False        # "Unexpected release of key code"
         key_code, keysym = entry
         self._write_key_event(keysym, key_code, False)
+        return True
 
     def release_all_keys(self):
         while True:

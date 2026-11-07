@@ -11,6 +11,7 @@
 # (at your option) any later version.
 """The Tk viewer application: desktop window, input and the F8 menu."""
 
+import collections
 import copy
 import os
 import queue
@@ -296,6 +297,11 @@ class ViewerApp:
         self.pass_win_var = tk.BooleanVar(value=bool(options.passwinkey))
         self.pass_cae_var = tk.BooleanVar(
             value=bool(options.passctrlaltenter))
+        # LogKeys: lines queued by every layer (also the hook thread),
+        # written out by the GUI thread
+        self.log_keys_var = tk.BooleanVar(value=bool(options.logkeys))
+        self.key_trace = collections.deque()
+        self.key_sent = False
         # Clipboard sharing, each direction on its own (options dialog,
         # Input tab: "Accept clipboard from server" / "Send clipboard to
         # server")
@@ -373,6 +379,8 @@ class ViewerApp:
             self.fatal("Invalid settings:\n\n%s" % e, reconnect=False)
             return 1
         self.saved_settings = self.settings_snapshot()
+        if self.log_keys_var.get():
+            self._log_keys_changed()
         try:
             if self.opts.listen:
                 sock = self._listen()
@@ -658,6 +666,8 @@ class ViewerApp:
 
     # -- event pump ----------------------------------------------------------
     def poll(self):
+        if self.key_trace:
+            self.flush_key_trace()
         try:
             while True:
                 ev = self.handler.events.get_nowait()
@@ -1115,29 +1125,75 @@ class ViewerApp:
         return False
 
     def on_key_press(self, event):
+        tracing = self.log_keys_var.get()
+        if tracing:
+            self.trace_key("tk    press   %s" % self._describe_key(event))
+            self.key_sent = False
+        why = self._key_press(event)
+        if tracing:
+            if why is None and not self.key_sent:
+                why = "nothing sent yet (left Ctrl held for the AltGr " \
+                    "check, or no keysym)"
+            if why:
+                self.trace_key("      -> %s" % why)
+            self.flush_key_trace()
+        return "break"
+
+    def _key_press(self, event):
+        """-> why the key went nowhere, or None if the keyboard took it."""
         if self.calibrating is not None and event.keysym == "Escape":
             self.cancel_calibration()
-            return "break"
+            return "ends the calibration"
         if self._swallow_fake_lock_key(event):
-            return "break"
+            return "our own lock key (LED sync), ignored"
         menukey = self.opts.menukey
         if menukey and event.keysym == menukey:
             self.keyboard.resolve_altgr(False)
+            self.flush_key_trace()
             self.show_menu(event)
-            return "break"
+            return "opens the menu"
         if self.view_only() or not self.conn:
-            return "break"
+            return "view only" if self.conn else "not connected"
         if event.keysym in ("Return", "KP_Enter") and \
                 not self.pass_cae_var.get() and self._ctrl_alt_held(event):
             # Ctrl+Alt+Enter: full screen (SagatVNC; upstream has no
             # default shortcut for it)
             self.keyboard.resolve_altgr(False)
             self.set_fullscreen(not self.fullscreen)
-            return "break"
+            return "Ctrl+Alt+Enter: full screen"
         if self._local_only_key(event):
-            return "break"
+            return "local only (Print Screen or Windows key setting)"
         self.keyboard.key_press(event)
-        return "break"
+        return None
+
+    @staticmethod
+    def _describe_key(event):
+        return "%-12s keycode %-3d keysym_num 0x%x char %r state 0x%x" % (
+            event.keysym, event.keycode, event.keysym_num, event.char,
+            event.state)
+
+    def trace_key(self, text):
+        """LogKeys: queue one line (any thread)."""
+        self.key_trace.append("%10.3f %s" % (time.perf_counter(), text))
+
+    def flush_key_trace(self):
+        while self.key_trace:
+            log("Key %s" % self.key_trace.popleft())
+
+    def _log_keys_changed(self):
+        on = bool(self.log_keys_var.get())
+        if self.key_grab:
+            self.key_grab.trace = self.trace_key if on else None
+        if on:
+            log("Key log on: keyboard layout %s, system keys %s, local IME "
+                "%s, menu key %s" % (
+                    kbd.keyboard_layout_name(),
+                    "to the server" if self.system_keys_var.get()
+                    else "local", "on" if self.local_ime_var.get()
+                    else "off", self.opts.menukey or "none"))
+        else:
+            self.flush_key_trace()
+            log("Key log off")
 
     def _ctrl_alt_held(self, event):
         if sys.platform == "win32":
@@ -1181,6 +1237,7 @@ class ViewerApp:
         g.swallow = bool(self.system_keys_var.get()) and \
             not self.view_only()
         g.menu_vk = menu_key_vk(self.opts.menukey)
+        g.trace = self.trace_key if self.log_keys_var.get() else None
         g.start()
 
     def ungrab_keyboard(self):
@@ -1218,29 +1275,54 @@ class ViewerApp:
         log("Menu key: %s" % key)
 
     def on_key_release(self, event):
+        tracing = self.log_keys_var.get()
+        if tracing:
+            self.trace_key("tk    release %s" % self._describe_key(event))
         if self._swallow_fake_lock_key(event):
-            return "break"
-        if self.view_only() or not self.conn:
-            return "break"
-        # A release without a press (e.g. the menu key) is ignored by
-        # Connection.send_key_release, as in CConnection::sendKeyRelease
-        self.keyboard.key_release(event)
+            why = "our own lock key (LED sync), ignored"
+        elif self.view_only() or not self.conn:
+            why = "view only" if self.conn else "not connected"
+        else:
+            # A release without a press (e.g. the menu key) is ignored by
+            # Connection.send_key_release, as in CConnection::sendKeyRelease
+            self.keyboard.key_release(event)
+            why = None
+        if tracing:
+            if why:
+                self.trace_key("      -> %s" % why)
+            self.flush_key_trace()
         return "break"
 
     def _key_pressed(self, system_key_code, key_code, keysym):
         try:
             self.conn.send_key_press(system_key_code, key_code, keysym)
-        except OSError:
-            pass
+            error = None
+        except OSError as e:
+            error = e
+        if self.log_keys_var.get():
+            self.key_sent = True
+            self.trace_key("      -> sent press   keysym 0x%x key code 0x%x "
+                           "(system 0x%x)%s" % (
+                               keysym or 0, key_code, system_key_code,
+                               ", FAILED: %s" % error if error else ""))
 
     def _key_released(self, system_key_code):
         try:
-            self.conn.send_key_release(system_key_code)
-        except OSError:
-            pass
+            sent = self.conn.send_key_release(system_key_code)
+            error = None
+        except OSError as e:
+            sent, error = False, e
+        if self.log_keys_var.get():
+            self.trace_key("      -> %s (system 0x%x)%s" % (
+                "sent release" if sent or error else
+                "release of a key the server doesn't have down, ignored",
+                system_key_code, ", FAILED: %s" % error if error else ""))
 
     def release_all_keys(self):
         """Viewport::resetKeyboard()"""
+        if self.log_keys_var.get() and self.conn and self.conn.down_keys:
+            self.trace_key("      releasing every key still down: %s" %
+                           " ".join("0x%x" % c for c in self.conn.down_keys))
         if self.conn:
             try:
                 self.conn.release_all_keys()
@@ -1249,6 +1331,8 @@ class ViewerApp:
         self.keyboard.reset()
 
     def on_focus_out(self, event):
+        if self.log_keys_var.get():
+            self.trace_key("focus out")
         self.has_focus = False
         self.ungrab_keyboard()
         # We won't get more key events, so reset our knowledge about keys
@@ -1258,6 +1342,10 @@ class ViewerApp:
         """Viewport FL_FOCUS"""
         self.has_focus = True
         self.grab_keyboard()
+        if self.log_keys_var.get():
+            g = self.key_grab
+            self.trace_key("focus in, keyboard hook %s" % (
+                "running" if g and g.running else "off"))
         if sys.platform == "win32" and not self.local_ime_var.get():
             set_local_ime(self.root, False)    # cheap; survives remaps
         if not self.conn:
@@ -1789,6 +1877,10 @@ class ViewerApp:
         sub.add_checkbutton(label="Send Ctrl+Alt+Enter to remote "
                             "(off: full screen)", variable=self.pass_cae_var,
                             command=self._keys_changed)
+        sub.add_separator()
+        sub.add_checkbutton(label="Log key events (troubleshooting)",
+                            variable=self.log_keys_var,
+                            command=self._log_keys_changed)
         self.keys_menu = sub
 
     def show_menu(self, event):
@@ -1854,6 +1946,7 @@ class ViewerApp:
         o.passalttab = bool(self.pass_alt_tab_var.get())
         o.passwinkey = bool(self.pass_win_var.get())
         o.passctrlaltenter = bool(self.pass_cae_var.get())
+        o.logkeys = bool(self.log_keys_var.get())
         o.acceptclipboard = bool(self.accept_clip_var.get())
         o.sendclipboard = bool(self.send_clip_var.get())
         o.remotedpiscale = (self.calibrating if self.calibrating is not None

@@ -164,6 +164,16 @@ input-language hotkeys (Alt+Shift, Ctrl+Shift), so you switch the
 whole keyboard grab off; then Windows acts on its shortcuts as in any
 program. *Save settings* keeps all of these.
 
+If keys go missing (say Ctrl+V reaches the remote computer as Ctrl
+only), tick F8 > Keyboard > *Log key events* (`LogKeys=1`) and
+reproduce it. Every key then gets lines in the log
+(`%APPDATA%\SagatVNC\sagatvnc.log`): `hook` (what the keyboard hook got
+from Windows and what it did with it), `queue` (the message reaching
+the viewer), `tk` (the key event) and `-> sent` (what went to the
+server). The first layer without the key is where it was lost. If the
+log shows it sent, look at the server: TigerVNC's winvnc logs
+`Key pressed` lines with `Log=*:file:100`.
+
 The title bar shows the live traffic and what the session uses, e.g.
 `UP: 0.4 KiB/s DL: 2.1 MiB/s   2560x1600 Tight+JPEG 24bit TLSVnc TLSv1.2`
 (remote size, the encodings of the last update, color depth, the security

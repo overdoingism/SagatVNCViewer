@@ -186,6 +186,12 @@ Deliberate differences from upstream, kept on purpose:
   tests/data/x509 (make_certs.sh regenerates them).
 - Python-only extras: scaling, RemoteDpiScale and its calibration, the
   IME toggle, DPI awareness, rotating logs, session summaries, the icon.
+- `LogKeys` (F8 > Keyboard > *Log key events*): one log line per layer
+  for every key: `hook` (`SystemKeyGrab._trace`, with how late the hook
+  ran), `queue` (message_hook, PM_REMOVE only), `tk`, `-> sent`. The hook
+  thread only appends to `ViewerApp.key_trace` (a deque); the GUI writes
+  it out in `poll()` and after each key event. Keep that: file I/O in the
+  hook would slow it towards LowLevelHooksTimeout.
 
 ## Key design decisions (don't undo these by accident)
 - **Pixel formats.** Full colour is `PixelFormat.preferred()`: 32bpp,

@@ -143,6 +143,21 @@ def has_altgr():
 _altgr_cache = {}
 
 
+def keyboard_layout_name():
+    """The GUI thread's layout, e.g. "04040404 (KLID 00000404, no AltGr)",
+    for the key log."""
+    if not IS_WINDOWS:
+        return "n/a"
+    import ctypes
+    user32 = ctypes.windll.user32
+    user32.GetKeyboardLayout.restype = ctypes.c_void_p
+    hkl = user32.GetKeyboardLayout(0) or 0
+    buf = ctypes.create_unicode_buffer(9)
+    klid = buf.value if user32.GetKeyboardLayoutNameW(buf) else "?"
+    return "%08x (KLID %s, %s)" % (hkl & 0xFFFFFFFF, klid,
+                                   "AltGr" if has_altgr() else "no AltGr")
+
+
 class Keyboard:
     """Turns Tk key events into press/release calls.
 

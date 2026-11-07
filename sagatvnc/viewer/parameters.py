@@ -157,6 +157,10 @@ PARAMS = [
     Param("PassCtrlAltEnter", bool, False,
           "Send Ctrl+Alt+Enter to the server (off: it toggles full "
           "screen). SagatVNC only"),
+    Param("LogKeys", bool, False,
+          "Write every key event to the log: what the keyboard hook, the "
+          "message queue and Tk saw, and what went to the server. For "
+          "tracking down lost keys. SagatVNC only"),
     Param("PointerEventInterval", int, 17,
           "Time in milliseconds to rate-limit successive pointer events"),
     Param("AlertOnFatalError", bool, True,

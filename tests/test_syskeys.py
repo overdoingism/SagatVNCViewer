@@ -156,6 +156,44 @@ class KeyPolicyTest(unittest.TestCase):
         # Other keys are not its business
         self.assertFalse(g._menu_key(0x78, False))
 
+    @unittest.skipUnless(syskeys.available(), "Windows only")
+    def test_key_log_says_where_each_key_went(self):
+        """LogKeys: the hook reports each low-level event and what it did
+        with it (driven with a fake KBDLLHOOKSTRUCT, never real keys)."""
+        g = syskeys.SystemKeyGrab(0, KeyPolicy())
+        lines = []
+        g.trace = lines.append
+        posted = []
+        g._post = lambda ks, up: posted.append((ks.vkCode, up)) or True
+        g.u.CallNextHookEx = lambda *a: 0
+        active = {"on": True}
+
+        def fake_active():
+            g.inactive_reason = "" if active["on"] else "menu open"
+            return active["on"]
+        g._active = fake_active
+
+        def event(vk, scan, up=False, lag=0):
+            ks = g.KBDLLHOOKSTRUCT()
+            ks.vkCode, ks.scanCode = vk, scan
+            ks.flags = syskeys.LLKHF_UP if up else 0
+            ks.time = (g.k.GetTickCount() - lag) & 0xFFFFFFFF
+            return g._keyboard_hook(0, 0, g.ct.addressof(ks))
+
+        self.assertEqual(event(0xA2, 0x1D), 1)          # Ctrl: swallowed
+        self.assertEqual(event(0x56, 0x2F, lag=400), 1)
+        active["on"] = False
+        self.assertEqual(event(0x56, 0x2F, up=True), 0)  # to Windows
+        self.assertEqual(posted, [(0xA2, False), (0x56, False)])
+        self.assertEqual(len(lines), 3)
+        self.assertIn("vk 0xa2 scan 0x1d down: posted to the viewer",
+                      lines[0])
+        self.assertNotIn("late", lines[0])
+        self.assertIn("vk 0x56 scan 0x2f down: posted to the viewer, hook "
+                      "ran 4", lines[1])
+        self.assertIn("vk 0x56 scan 0x2f up  : to Windows (menu open)",
+                      lines[2])
+
     def test_win32_part_only_on_windows(self):
         import sys
         self.assertEqual(syskeys.available(), sys.platform == "win32")

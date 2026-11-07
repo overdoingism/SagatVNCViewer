@@ -127,6 +127,9 @@ class KeyPolicy:
 WH_KEYBOARD_LL, WH_GETMESSAGE = 13, 3
 WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP = 0x100, 0x101, 0x104, \
     0x105
+_MSG_NAMES = {WM_KEYDOWN: "WM_KEYDOWN", WM_KEYUP: "WM_KEYUP",
+              WM_SYSKEYDOWN: "WM_SYSKEYDOWN", WM_SYSKEYUP: "WM_SYSKEYUP"}
+PM_REMOVE = 1
 WM_QUIT = 0x12
 WM_CANCELMODE = 0x1F
 LLKHF_EXTENDED, LLKHF_INJECTED, LLKHF_ALTDOWN, LLKHF_UP = 0x01, 0x10, \
@@ -178,6 +181,10 @@ class SystemKeyGrab:
         self.menu_vk = None        # the F8 menu's key, to close it again
         self.menu_key_down = False
         self.swallow_menu_release = False
+        # LogKeys: called with one line per event (from the hook thread
+        # too, so it must only queue it)
+        self.trace = None
+        self.inactive_reason = ""
         self._setup_api()
 
     # -- ctypes declarations ------------------------------------------------
@@ -247,6 +254,7 @@ class SystemKeyGrab:
         k.GetModuleHandleW.restype = ct.c_void_p
         k.GetModuleHandleW.argtypes = [wt.LPCWSTR]
         k.GetCurrentThreadId.restype = wt.DWORD
+        k.GetTickCount.restype = wt.DWORD
 
     # -- start / stop (GUI thread) -------------------------------------------
     def set_window(self, window):
@@ -314,17 +322,23 @@ class SystemKeyGrab:
         u = self.u
         fg = u.GetForegroundWindow()
         if not fg or fg != self.window:
+            self.inactive_reason = "foreground %s, not ours %s" % (
+                fg and hex(fg), self.window and hex(self.window))
             return False
         info = self.GUITHREADINFO()
         info.cbSize = self.ct.sizeof(info)
         if not u.GetGUIThreadInfo(self.gui_thread, self.ct.byref(info)):
+            self.inactive_reason = "GetGUIThreadInfo failed"
             return False
         if info.flags & (GUI_INMENUMODE | GUI_SYSTEMMENUMODE |
                          GUI_POPUPMENUMODE | GUI_INMOVESIZE):
+            self.inactive_reason = "menu or move/size (flags 0x%x)" % \
+                info.flags
             return False
         # Tk keeps the Win32 focus on one window per toplevel and routes
         # keys to the focused widget itself
         self.focus_hwnd = info.hwndFocus
+        self.inactive_reason = "" if info.hwndFocus else "no focus window"
         return bool(info.hwndFocus)
 
     def _menu_owner(self):
@@ -373,6 +387,7 @@ class SystemKeyGrab:
                 up = bool(ks.flags & LLKHF_UP)
                 if not ks.flags & LLKHF_INJECTED and \
                         self._menu_key(ks.vkCode, up):
+                    self._trace(ks, up, "menu key: closes the menu")
                     return 1
                 active = self.swallow and self._active()
                 if active and not self.was_active:
@@ -384,11 +399,37 @@ class SystemKeyGrab:
                     if replay:
                         self._replay(replay)
                     if how == BLOCK:
-                        self._post(ks, up)
+                        posted = self._post(ks, up)
+                        self._trace(ks, up, "posted to the viewer" if posted
+                                    else "PostMessage FAILED (error %d)" %
+                                    self.ct.get_last_error())
                         return 1
-        except Exception:                  # never break the keyboard
-            pass
+                    self._trace(ks, up, "to Windows (local key)%s" % (
+                        ", replayed %s" % " ".join("0x%x" % v for v in replay)
+                        if replay else ""))
+                else:
+                    self._trace(ks, up, "to Windows (%s)" % (
+                        self.inactive_reason if self.swallow
+                        else "system keys off"))
+        except Exception as e:             # never break the keyboard
+            try:
+                self.trace and self.trace("hook error: %r" % e)
+            except Exception:
+                pass
         return self.u.CallNextHookEx(None, code, wparam, lparam)
+
+    def _trace(self, ks, up, what):
+        """LogKeys: one line per low-level event.  ``lag`` is how long
+        after the key event the hook ran (Windows gives up on a hook after
+        LowLevelHooksTimeout and may remove it)."""
+        if self.trace is None:
+            return
+        lag = (self.k.GetTickCount() - ks.time) & 0xFFFFFFFF
+        self.trace("hook  vk 0x%02x scan 0x%02x %s%s%s: %s%s" % (
+            ks.vkCode, ks.scanCode, "up  " if up else "down",
+            " ext" if ks.flags & LLKHF_EXTENDED else "",
+            " injected" if ks.flags & LLKHF_INJECTED else "", what,
+            ", hook ran %d ms late" % lag if lag >= 50 else ""))
 
     def _post(self, ks, up):
         # keyboard_hook: PostMessage(target_wnd, wParam, vkey,
@@ -401,9 +442,9 @@ class SystemKeyGrab:
             lparam |= (1 << 30) | (1 << 31)
         if lparam >= 1 << 31 and self.ct.sizeof(self.wt.LPARAM) == 4:
             lparam -= 1 << 32
-        self.u.PostMessageW(self.focus_hwnd,
-                            WM_KEYUP if up else WM_KEYDOWN, ks.vkCode,
-                            lparam)
+        return bool(self.u.PostMessageW(self.focus_hwnd,
+                                        WM_KEYUP if up else WM_KEYDOWN,
+                                        ks.vkCode, lparam))
 
     def _replay(self, vks):
         """Tell Windows about swallowed modifiers a local combination
@@ -425,6 +466,10 @@ class SystemKeyGrab:
                 msg = self.MSG.from_address(lparam)
                 if msg.message in (WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN,
                                    WM_SYSKEYUP):
+                    if self.trace is not None and wparam == PM_REMOVE:
+                        self.trace("queue %s vk 0x%02x scan 0x%02x" % (
+                            _MSG_NAMES[msg.message], msg.wParam & 0xFF,
+                            (msg.lParam >> 16) & 0xFF))
                     self._fix_state(msg)
         except Exception:
             pass
