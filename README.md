@@ -170,9 +170,12 @@ reproduce it. Every key then gets lines in the log
 (`%APPDATA%\SagatVNC\sagatvnc.log`): `hook` (what the keyboard hook got
 from Windows and what it did with it), `queue` (the message reaching
 the viewer), `tk` (the key event) and `-> sent` (what went to the
-server). The first layer without the key is where it was lost. If the
-log shows it sent, look at the server: TigerVNC's winvnc logs
-`Key pressed` lines with `Log=*:file:100`.
+server). The first layer without the key is where it was lost.
+Clipboard traffic is logged in between as `clip` lines (who announced,
+asked for or sent a clipboard, with its length and checksum), because a
+paste that does nothing looks just like a lost V. If the log shows the
+key sent, look at the server: TigerVNC's winvnc logs keys with
+`Log=*:file:100`, x0vncserver and Xvnc with `-Log *:stderr:100`.
 
 The title bar shows the live traffic and what the session uses, e.g.
 `UP: 0.4 KiB/s DL: 2.1 MiB/s   2560x1600 Tight+JPEG 24bit TLSVnc TLSv1.2`

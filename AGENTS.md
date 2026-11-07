@@ -188,7 +188,10 @@ Deliberate differences from upstream, kept on purpose:
   IME toggle, DPI awareness, rotating logs, session summaries, the icon.
 - `LogKeys` (F8 > Keyboard > *Log key events*): one log line per layer
   for every key: `hook` (`SystemKeyGrab._trace`, with how late the hook
-  ran), `queue` (message_hook, PM_REMOVE only), `tk`, `-> sent`. The hook
+  ran), `queue` (message_hook, PM_REMOVE only), `tk`, `-> sent`, plus
+  `clip` lines for clipboard traffic (`Connection.trace` ->
+  `ViewerApp.trace_clipboard`; texts only as `describe_text`, length +
+  CRC, never the contents). The hook
   thread only appends to `ViewerApp.key_trace` (a deque); the GUI writes
   it out in `poll()` and after each key event. Keep that: file I/O in the
   hook would slow it towards LowLevelHooksTimeout.

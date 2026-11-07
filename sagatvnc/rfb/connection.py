@@ -117,6 +117,13 @@ class Screen:
     flags: int
 
 
+def describe_text(text):
+    """Length and checksum of clipboard text, for the key log: enough to
+    tell two texts apart without writing them to the log."""
+    return "%d chars, crc %08x" % (
+        len(text), zlib.crc32(text.encode("utf-8", "surrogatepass")))
+
+
 def _decode_text(data):
     """Strings from the server: UTF-8, falling back to Latin-1
     (CConnection::processSecurityReasonMsg, processServerInitMsg)."""
@@ -191,6 +198,8 @@ class Connection:
         self.server_clipboard = ""
         self.has_remote_clipboard = False
         self.unsolicited_attempt = False
+        # LogKeys: callable taking one line (any thread), or None
+        self.trace = None
 
     # -- handler shims used by SecurityHandler -------------------------------
     def log(self, msg):
@@ -463,6 +472,8 @@ class Connection:
             self.log("Clipboard too large (%d bytes)" % length)
             return
         text = s.read(length).decode("latin-1")
+        self._trace("server sent its clipboard (classic cut text, %s)"
+                    % describe_text(text))
         # CConnection::serverCutText(): keep it, then let the viewer
         # decide (via announce -> request_clipboard) whether to use it
         self.local_clipboard = None
@@ -739,13 +750,22 @@ class Connection:
         elif action == enc.CLIP_REQUEST:
             # CConnection::clipboardRequest()
             if not flags & enc.CLIP_UTF8:
+                self._trace("server asks for our clipboard in formats "
+                            "0x%x: ignored" % flags)
                 self.log("Ignoring clipboard request for unsupported "
                          "formats 0x%x" % flags)
             elif self.local_clipboard is None:
+                self._trace("server asks for our clipboard: ignored, we "
+                            "haven't announced one")
                 self.log("Ignoring unexpected clipboard request")
             else:
+                self._trace("server asks for our clipboard: sent %s"
+                            % describe_text(self.local_clipboard))
                 self._send_clipboard_data(self.local_clipboard)
         elif action == enc.CLIP_PEEK:
+            self._trace("server peeks: we have %s" % (
+                "a clipboard" if self.local_clipboard is not None
+                else "none"))
             if self.server_clip_flags & enc.CLIP_NOTIFY:
                 self._write_clipboard(
                     enc.CLIP_NOTIFY | (enc.CLIP_UTF8 if self.local_clipboard
@@ -755,6 +775,9 @@ class Connection:
             # changed; the viewer decides whether to fetch it (TigerVNC's
             # Viewport only does when it has focus).
             self.has_remote_clipboard = False
+            self._trace("server: %s" % (
+                "its clipboard changed" if flags & enc.CLIP_UTF8
+                else "it has no clipboard now"))
             if flags & enc.CLIP_UTF8:
                 self.local_clipboard = None
                 self._clipboard_announce(True)
@@ -790,6 +813,7 @@ class Connection:
         except UnicodeDecodeError:
             self.log("Invalid UTF-8 sequence in clipboard")
             return
+        self._trace("server sent its clipboard (%s)" % describe_text(text))
         # CConnection::clipboardProvide()
         self.server_clipboard = text.replace("\r\n", "\n")
         self.has_remote_clipboard = True
@@ -810,9 +834,12 @@ class Connection:
     def request_clipboard(self):
         """CConnection::requestClipboard(); callable from any thread."""
         if self.has_remote_clipboard:
+            self._trace("-> server clipboard wanted: using the copy we "
+                        "already have")
             self.handler.server_cut_text(self.server_clipboard)
             return
         if self.server_clip_flags & enc.CLIP_REQUEST:
+            self._trace("-> asking the server for its clipboard")
             self._write_clipboard(enc.CLIP_REQUEST | enc.CLIP_UTF8)
 
     def _write_clipboard(self, flags, payload=b""):
@@ -827,6 +854,8 @@ class Connection:
             if self.unsolicited_attempt:
                 self.unsolicited_attempt = False
                 if len(data) > self.server_clip_sizes.get(enc.CLIP_UTF8, 0):
+                    self._trace("-> too big to send unasked, notify "
+                                "instead")
                     if self.server_clip_flags & enc.CLIP_NOTIFY:
                         self._write_clipboard(enc.CLIP_NOTIFY |
                                               enc.CLIP_UTF8)
@@ -844,18 +873,31 @@ class Connection:
         self.local_clipboard = text
         self.unsolicited_attempt = False
         flags = self.server_clip_flags
+        how = describe_text(text)
         if not flags & enc.CLIP_CAPS:
+            self._trace("-> our clipboard changed: sent as classic cut "
+                        "text (%s)" % how)
             self.client_cut_text(text)          # classic Latin-1 cut text
             return
         if self.server_clip_sizes.get(enc.CLIP_UTF8, 0) > 0 and \
                 flags & enc.CLIP_PROVIDE:
+            self._trace("-> our clipboard changed: sent unasked (%s)" % how)
             self.unsolicited_attempt = True
             self._send_clipboard_data(text)
             return
         if flags & enc.CLIP_NOTIFY:
+            self._trace("-> our clipboard changed: told the server (%s)"
+                        % how)
             self._write_clipboard(enc.CLIP_NOTIFY | enc.CLIP_UTF8)
             return
+        self._trace("-> our clipboard changed: sent (%s)" % how)
         self._send_clipboard_data(text)
+
+    def _trace(self, text):
+        """LogKeys: clipboard traffic, in step with the key lines."""
+        trace = self.trace
+        if trace is not None:
+            trace(text)
 
     # -- desktop size (CConnection::setDesktopSize/setExtendedDesktopSize) ---
     def _set_desktop_size(self, w, h):

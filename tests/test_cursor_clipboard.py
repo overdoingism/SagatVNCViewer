@@ -287,7 +287,8 @@ class ExtendedClipboardTest(Session):
         app = SimpleNamespace(
             view_only=lambda: False, has_focus=False,
             opts=SimpleNamespace(acceptclipboard=True),
-            conn=SimpleNamespace(request_clipboard=lambda: calls.append(1)))
+            conn=SimpleNamespace(request_clipboard=lambda: calls.append(1)),
+            trace_clipboard=lambda text: None)
         ViewerApp.clipboard_announce(app, True)
         self.assertEqual(calls, [])
         app.has_focus = True
@@ -300,6 +301,32 @@ class ExtendedClipboardTest(Session):
         self.ext(enc.CLIP_PEEK)
         m = self.server.wait_for("extclip")
         self.assertEqual(m[1], enc.CLIP_NOTIFY)          # nothing yet
+
+    def test_key_log_shows_clipboard_traffic(self):
+        from sagatvnc.rfb.connection import describe_text
+        self.start()
+        lines = []
+        self.conn.trace = lines.append
+        self.handshake_caps()
+        self.conn.announce_clipboard("ours")
+        self.server.wait_for("extclip")                  # our notify
+        self.ext(enc.CLIP_REQUEST | enc.CLIP_UTF8)
+        self.server.wait_for("extclip")                  # our provide
+        self.ext(enc.CLIP_NOTIFY | enc.CLIP_UTF8)
+        self.server.wait_for("extclip")                  # our request
+        self.ext(enc.CLIP_REQUEST | enc.CLIP_UTF8)       # we have none now
+        self.ext(enc.CLIP_PROVIDE | enc.CLIP_UTF8, self.provide("theirs"))
+        self.assertTrue(self.handler.got_cut.wait(5))
+        self.assertEqual(lines, [
+            "-> our clipboard changed: told the server (%s)"
+            % describe_text("ours"),
+            "server asks for our clipboard: sent %s" % describe_text("ours"),
+            "server: its clipboard changed",
+            "-> asking the server for its clipboard",
+            "server asks for our clipboard: ignored, we haven't announced "
+            "one",
+            "server sent its clipboard (%s)" % describe_text("theirs"),
+        ])
 
     def test_legacy_server_gets_latin1(self):
         self.start()

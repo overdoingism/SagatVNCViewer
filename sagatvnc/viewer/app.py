@@ -27,7 +27,7 @@ from .. import __version__
 from ..rfb import accel
 from ..rfb import encodings as enc
 from ..rfb.connection import (Connection, ConnectionOptions,
-                              DroppedBeforeSession)
+                              DroppedBeforeSession, describe_text)
 from ..rfb.des import deobfuscate_password
 from ..rfb.security import (AuthFailure, CertificateRetry, connect_socket,
                              parse_security_types)
@@ -300,6 +300,7 @@ class ViewerApp:
         # LogKeys: lines queued by every layer (also the hook thread),
         # written out by the GUI thread
         self.log_keys_var = tk.BooleanVar(value=bool(options.logkeys))
+        self.log_keys_on = bool(options.logkeys)   # for the network thread
         self.key_trace = collections.deque()
         self.key_sent = False
         # Clipboard sharing, each direction on its own (options dialog,
@@ -511,6 +512,7 @@ class ViewerApp:
                 return
         conn = self.conn = Connection(sock, self.host, handler,
                                       self.conn_options)
+        conn.trace = self.trace_clipboard
         if self.cancelled:          # cancelled while the socket connected
             conn.close()
         try:
@@ -1176,12 +1178,18 @@ class ViewerApp:
         """LogKeys: queue one line (any thread)."""
         self.key_trace.append("%10.3f %s" % (time.perf_counter(), text))
 
+    def trace_clipboard(self, text):
+        """LogKeys: clipboard traffic (any thread), so a paste that does
+        nothing can be lined up with what the clipboard was doing."""
+        if self.log_keys_on:
+            self.trace_key("clip  " + text)
+
     def flush_key_trace(self):
         while self.key_trace:
             log("Key %s" % self.key_trace.popleft())
 
     def _log_keys_changed(self):
-        on = bool(self.log_keys_var.get())
+        on = self.log_keys_on = bool(self.log_keys_var.get())
         if self.key_grab:
             self.key_grab.trace = self.trace_key if on else None
         if on:
@@ -1394,8 +1402,12 @@ class ViewerApp:
         try:
             text = self.root.clipboard_get()
         except tk.TclError:
+            self.trace_clipboard("focus in: no text on the local clipboard")
             return
         if text and text != self.last_clipboard:
+            self.trace_clipboard("focus in: local clipboard changed (%s, "
+                                 "was %s)" % (describe_text(text),
+                                 describe_text(self.last_clipboard or "")))
             self.last_clipboard = text
             try:
                 self.conn.announce_clipboard(text)
@@ -1417,6 +1429,7 @@ class ViewerApp:
             log("Clipboard is no longer available on server")
             return
         if not self.has_focus:
+            self.trace_clipboard("not focused: server clipboard not fetched")
             log("Got notification of new clipboard on server whilst not "
                 "focused, ignoring")
             return
@@ -1428,10 +1441,15 @@ class ViewerApp:
     def server_cut_text(self, text):
         """TigerVNC Viewport::handleClipboardData()."""
         if not self.opts.acceptclipboard or not self.has_focus:
+            self.trace_clipboard("server clipboard dropped (%s)" % (
+                "not accepted" if not self.opts.acceptclipboard
+                else "not focused"))
             return
         self.last_clipboard = text
         self.root.clipboard_clear()
         self.root.clipboard_append(text)
+        self.trace_clipboard("put on the local clipboard (%s)"
+                             % describe_text(text))
 
     # -- pointer -----------------------------------------------------------
     def _fb_coords(self, event):
