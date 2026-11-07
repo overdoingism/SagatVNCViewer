@@ -177,6 +177,11 @@ Deliberate differences from upstream, kept on purpose:
   them. OpenSSL reports only the first problem, so the user gets one
   question where upstream may ask several. `x509_known_hosts` stores
   `host sha256-of-certificate`, not GnuTLS's public-key format.
+  The files are picked in F8 > *X509 certificates* (standing in for the
+  options dialog's Security tab; `pick_cert_file` checks them with
+  `check_pem_file`); they apply from the next connection. Each network
+  thread posts to its own handler (`_network_thread`), so a late event
+  from an old connection never reaches the next one.
   tests/test_x509.py runs real TLS with the certificates in
   tests/data/x509 (make_certs.sh regenerates them).
 - Python-only extras: scaling, RemoteDpiScale and its calibration, the

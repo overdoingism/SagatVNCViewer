@@ -135,6 +135,7 @@ again (or Esc) to close it:
 - *Input*: view only, remote cursor shape, local input method (IME),
   *Accept clipboard from remote* and *Send clipboard to remote*
   (`AcceptClipboard`, `SendClipboard`: each direction on its own)
+- *X509 certificates*: CA and revocation list files (see below)
 - *Keyboard* (menu key F7-F12, and which special keys go to the remote
   computer, see below), Send F8, Send Ctrl-Alt-Del
 - Refresh screen
@@ -250,8 +251,12 @@ TigerVNC, the server's certificate is checked against the system's
 trusted CAs plus, if they exist, `x509_ca.pem` (extra CAs) and
 `x509_crl.pem` (revocation list) in the SagatVNC folder
 (`%APPDATA%\SagatVNC` on Windows, `~/.config/sagatvnc` elsewhere), or
-the files named by `X509CA` / `X509CRL` on the command line or in a
-`.tigervnc` file. There is no options dialog to pick them yet.
+the files picked in the F8 menu under *X509 certificates* (also
+`X509CA` / `X509CRL` on the command line or in a `.tigervnc` file). The
+menu shows which files are in use, refuses files that aren't PEM
+certificates or revocation lists, can go back to the defaults and opens
+the SagatVNC folder; picks apply from the next connection, and *Save
+settings* keeps them.
 
 A certificate that checks out is used without a question. One that
 doesn't (unknown or self-signed issuer, wrong host name, expired or not

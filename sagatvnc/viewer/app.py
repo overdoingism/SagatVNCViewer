@@ -15,6 +15,7 @@ import copy
 import os
 import queue
 import socket
+import ssl
 import sys
 import threading
 import time
@@ -54,6 +55,30 @@ HISTORY_FILE = "history"
 def log(msg):
     print("%s: %s" % (time.strftime("%H:%M:%S"), msg), file=sys.stderr,
           flush=True)
+
+
+def check_pem_file(path):
+    """None if OpenSSL can load ``path`` as CA certificates or CRLs (PEM,
+    as CSecurityTLS loads them), else the reason."""
+    try:
+        ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(
+            cafile=path)
+    except (OSError, ssl.SSLError) as e:
+        return str(e)
+    return None
+
+
+def x509_files(o, co):
+    """CSecurityTLS::X509CA / X509CRL: default files in the config
+    directory, used if they exist."""
+    for attr, value, default in (("x509_ca", o.x509ca, "x509_ca.pem"),
+                                 ("x509_crl", o.x509crl, "x509_crl.pem")):
+        path = os.path.expanduser(value.strip()) if value.strip() else \
+            os.path.join(config_dir(), default)
+        if value.strip() and not os.path.exists(path):
+            log("%s file not found: %s" % (attr.upper().replace("_", ""),
+                                           path))
+        setattr(co, attr, path)
 
 
 class SwitchSecurity(Exception):
@@ -401,16 +426,7 @@ class ViewerApp:
                 log("Unknown PreferredSecurity %r, ignored" % pref)
             self.preferred_security = chosen
         co.preferred_security = chosen
-        # CSecurityTLS::X509CA / X509CRL: default files in the config
-        # directory, used if they exist
-        for attr, value, default in (("x509_ca", o.x509ca, "x509_ca.pem"),
-                                     ("x509_crl", o.x509crl, "x509_crl.pem")):
-            path = os.path.expanduser(value.strip()) if value.strip() else \
-                os.path.join(config_dir(), default)
-            if value.strip() and not os.path.exists(path):
-                log("%s file not found: %s" % (attr.upper().replace("_", ""),
-                                               path))
-            setattr(co, attr, path)
+        x509_files(o, co)
         co.known_hosts = os.path.join(config_dir(), "x509_known_hosts")
         co.auto_select = bool(o.autoselect)
         pe = o.preferredencoding.strip()
@@ -477,48 +493,52 @@ class ViewerApp:
             return None
 
     def _network_thread(self, sock):
+        # This thread's own handler and connection: after a reconnect,
+        # self.handler / self.conn belong to the next one, which must not
+        # get this one's last events
+        handler = self.handler
         if sock is None:
             sock = self._connect()
             if sock is None:
                 return
-        self.conn = Connection(sock, self.host, self.handler,
-                               self.conn_options)
+        conn = self.conn = Connection(sock, self.host, handler,
+                                      self.conn_options)
         if self.cancelled:          # cancelled while the socket connected
-            self.conn.close()
+            conn.close()
         try:
-            self.conn.run()
-            self.handler.events.put(("closed", "cancelled" if self.cancelled
-                                     else None))
+            conn.run()
+            handler.events.put(("closed", "cancelled" if self.cancelled
+                                else None))
         except Cancelled:
-            self.handler.events.put(("closed", "cancelled"))
+            handler.events.put(("closed", "cancelled"))
         except SwitchSecurity as e:
-            self.handler.events.put(("switch", e.args[0]))
+            handler.events.put(("switch", e.args[0]))
         except CertificateRetry as e:
-            self.handler.events.put(("certretry", e))
+            handler.events.put(("certretry", e))
         except AuthFailure as e:
             self.saved_credentials = None
-            self.handler.events.put(("error", "Failed to authenticate with "
-                                     "the server. Reason given by the "
-                                     "server:\n\n%s" % e))
+            handler.events.put(("error", "Failed to authenticate with "
+                                "the server. Reason given by the "
+                                "server:\n\n%s" % e))
         except DroppedBeforeSession as e:
             if self.cancelled:
-                self.handler.events.put(("closed", "cancelled"))
+                handler.events.put(("closed", "cancelled"))
             else:
-                self.handler.events.put(("error", str(e)))
+                handler.events.put(("error", str(e)))
         except ConnectionClosed:
             # CConn: end of stream once the session runs -> disconnect()
             # quietly, as TigerVNC does
-            log(self.conn.session_summary())
-            self.handler.events.put(("closed", None))
+            log(conn.session_summary())
+            handler.events.put(("closed", None))
         except Exception as e:     # report anything else to the user
-            if not self.conn.closed:
-                log(self.conn.session_summary())
-            if self.conn.closed:
-                self.handler.events.put(("closed", "cancelled"
-                                         if self.cancelled else None))
+            if not conn.closed:
+                log(conn.session_summary())
+            if conn.closed:
+                handler.events.put(("closed", "cancelled"
+                                    if self.cancelled else None))
             else:
-                self.handler.events.put(("error", "%s: %s" %
-                                         (type(e).__name__, e)))
+                handler.events.put(("error", "%s: %s" %
+                                    (type(e).__name__, e)))
 
     # -- the connecting window ----------------------------------------------
     def _show_connecting(self):
@@ -1621,6 +1641,7 @@ class ViewerApp:
         sub.add_checkbutton(label="Send clipboard to remote",
                             variable=self.send_clip_var,
                             command=self._clipboard_changed)
+        self._build_cert_menu(submenu("X509 certificates"))
         m.add_separator()
 
         # -- keyboard: where keys go, and keys you can't press here
@@ -1654,6 +1675,93 @@ class ViewerApp:
         m.add_command(label="Dismiss menu", command=lambda: None)
         self.menu = m
 
+    # -- X509 files (options dialog, Security tab: "Path to X509 CA
+    # certificate" / "Path to X509 CRL file") ------------------------------
+    CERT_FILES = (("x509ca", "x509_ca.pem", "CA certificates"),
+                  ("x509crl", "x509_crl.pem", "Revocation list (CRL)"))
+
+    def _build_cert_menu(self, sub):
+        self.cert_menu = sub
+        for opt, default, what in self.CERT_FILES:
+            sub.add_command(label=what,
+                            command=lambda o=opt, w=what: self.pick_cert_file(
+                                o, w))
+        sub.add_command(label="Use the defaults",
+                        command=self.default_cert_files)
+        sub.add_separator()
+        sub.add_command(label="Open the certificate folder",
+                        command=self.open_cert_folder)
+        sub.add_separator()
+        sub.add_command(label="Applies from the next connection",
+                        state="disabled")
+        self._update_cert_menu()
+
+    def cert_file_label(self, opt, default, what):
+        """"CA certificates: corp-ca.pem...": the file picked, else the
+        default file if it is in the config folder, else what applies."""
+        value = getattr(self.opts, opt).strip()
+        if value:
+            name = os.path.basename(value)
+            if not os.path.exists(os.path.expanduser(value)):
+                name += " (missing)"
+        elif os.path.exists(os.path.join(config_dir(), default)):
+            name = "%s (in the folder)" % default
+        else:
+            name = "system CAs only" if opt == "x509ca" else "none"
+        return "%s: %s..." % (what, name)
+
+    def _update_cert_menu(self):
+        if getattr(self, "cert_menu", None) is None:
+            return
+        for i, (opt, default, what) in enumerate(self.CERT_FILES):
+            self.cert_menu.entryconfigure(
+                i, label=self.cert_file_label(opt, default, what))
+        self.cert_menu.entryconfigure(
+            2, state="normal" if self.opts.x509ca.strip() or
+            self.opts.x509crl.strip() else "disabled")
+
+    def pick_cert_file(self, opt, what):
+        current = os.path.expanduser(getattr(self.opts, opt).strip())
+        path = filedialog.askopenfilename(
+            parent=self.root, title="SagatVNC Viewer: %s" % what,
+            initialdir=os.path.dirname(current) if current else
+            config_dir(),
+            filetypes=[("PEM files", "*.pem *.crt *.cer *.crl"),
+                       ("All files", "*.*")])
+        if not path:
+            return
+        path = os.path.abspath(path)
+        error = check_pem_file(path)
+        if error:
+            messagebox.showerror(
+                "SagatVNC Viewer", "%s is not a usable PEM file:\n\n%s" %
+                (path, error), parent=self.root)
+            return
+        setattr(self.opts, opt, path)
+        self._cert_files_changed()
+
+    def default_cert_files(self):
+        self.opts.x509ca = ""
+        self.opts.x509crl = ""
+        self._cert_files_changed()
+
+    def _cert_files_changed(self):
+        x509_files(self.opts, self.conn_options)
+        log("X509 files: CA %s, CRL %s (from the next connection)" %
+            (self.conn_options.x509_ca, self.conn_options.x509_crl))
+        self._update_cert_menu()
+        self._flash_title("X509 files apply from the next connection")
+
+    def open_cert_folder(self):
+        folder = config_dir()
+        os.makedirs(folder, exist_ok=True)
+        if sys.platform == "win32":
+            os.startfile(folder)
+        else:
+            import subprocess
+            subprocess.Popen(["xdg-open" if sys.platform != "darwin"
+                              else "open", folder])
+
     def _build_keys_menu(self, sub):
         """Menu key and where special keys go."""
         keys = tk.Menu(sub, tearoff=False)
@@ -1686,6 +1794,7 @@ class ViewerApp:
     def show_menu(self, event):
         self.release_all_keys()
         self.mark_unsaved()
+        self._update_cert_menu()
         x = self.canvas.winfo_rootx() + 20
         y = self.canvas.winfo_rooty() + 20
         try:

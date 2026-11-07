@@ -243,6 +243,49 @@ class X509Test(unittest.TestCase):
         self.assertNotEqual(read_known_hosts(self.known)["127.0.0.1"], old)
 
 
+class CertificateFilesMenuTest(unittest.TestCase):
+    """F8 > X509 certificates (stands in for the options dialog's
+    Security tab)."""
+
+    def setUp(self):
+        from unittest import mock
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        patcher = mock.patch("sagatvnc.viewer.app.config_dir",
+                             lambda: self.dir)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def label(self, opt, value):
+        from types import SimpleNamespace
+        from sagatvnc.viewer.app import ViewerApp
+        app = SimpleNamespace(opts=SimpleNamespace(**{opt: value}))
+        for o, default, what in ViewerApp.CERT_FILES:
+            if o == opt:
+                return ViewerApp.cert_file_label(app, opt, default, what)
+
+    def test_labels(self):
+        self.assertEqual(self.label("x509ca", ""),
+                         "CA certificates: system CAs only...")
+        self.assertEqual(self.label("x509crl", ""),
+                         "Revocation list (CRL): none...")
+        self.assertEqual(self.label("x509ca", CA), "CA certificates: ca.pem...")
+        missing = os.path.join(self.dir, "x.pem")
+        self.assertEqual(self.label("x509ca", missing),
+                         "CA certificates: x.pem (missing)...")
+        shutil.copy(CA, os.path.join(self.dir, "x509_ca.pem"))
+        self.assertEqual(self.label("x509ca", ""),
+                         "CA certificates: x509_ca.pem (in the folder)...")
+
+    def test_only_pem_certificates_or_crls(self):
+        from sagatvnc.viewer.app import check_pem_file
+        self.assertIsNone(check_pem_file(CA))
+        self.assertIsNone(check_pem_file(CRL))
+        self.assertIsNotNone(check_pem_file(os.path.join(DATA,
+                                                         "server.key")))
+        self.assertIsNotNone(check_pem_file(os.path.join(self.dir, "no")))
+
+
 class QuestionTextTest(unittest.TestCase):
     def test_new_host(self):
         title, text = certificate_question({
