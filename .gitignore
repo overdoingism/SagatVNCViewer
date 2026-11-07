@@ -11,3 +11,5 @@ sagatvnc/rfb/*.dylib
 .venv/
 # Reference checkout of TigerVNC (see AGENTS.md)
 upstream/
+# Log files of a source checkout run without a console (sagatvnc/logfile.py)
+/log/

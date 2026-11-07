@@ -46,8 +46,13 @@ This produces a single windowed `dist\SagatVNCViewer.exe`. If Rust
 filter 7-40x faster. Without Rust the exe uses the same algorithms in
 Python. `python packaging\build_accel.py` builds them for running from
 source. Because it has no
-console, it logs to `%APPDATA%\SagatVNC\sagatvnc.log` and reports errors in
-dialogs.
+console, it logs to `log\sagatvnc.log` next to the exe (or to
+`%APPDATA%\SagatVNC` when that folder can't be written, e.g. under
+Program Files) and reports errors in dialogs. Each start begins a new log
+and keeps the last four as `sagatvnc.1.log` ... `sagatvnc.4.log`.
+F8 > *Troubleshooting* sets how much goes in (`LogLevel`: 0 = nothing,
+1 = normal, 2 = also every key and clipboard event) and opens the log
+folder.
 
 ### Scaling and high-DPI displays
 
@@ -165,9 +170,9 @@ whole keyboard grab off; then Windows acts on its shortcuts as in any
 program. *Save settings* keeps all of these.
 
 If keys go missing (say Ctrl+V reaches the remote computer as Ctrl
-only), tick F8 > Keyboard > *Log key events* (`LogKeys=1`) and
+only), pick F8 > Troubleshooting > *Log: detailed* (`LogLevel=2`) and
 reproduce it. Every key then gets lines in the log
-(`%APPDATA%\SagatVNC\sagatvnc.log`): `hook` (what the keyboard hook got
+(`log\sagatvnc.log` next to the exe): `hook` (what the keyboard hook got
 from Windows and what it did with it), `queue` (the message reaching
 the viewer), `tk` (the key event) and `-> sent` (what went to the
 server). The first layer without the key is where it was lost.

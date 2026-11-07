@@ -172,6 +172,8 @@ class KeyPolicyTest(unittest.TestCase):
             g.inactive_reason = "" if active["on"] else "menu open"
             return active["on"]
         g._active = fake_active
+        ours = {"on": True}
+        g._foreground_ours = lambda: ours["on"]
 
         def event(vk, scan, up=False, lag=0):
             ks = g.KBDLLHOOKSTRUCT()
@@ -193,6 +195,9 @@ class KeyPolicyTest(unittest.TestCase):
                       "ran 4", lines[1])
         self.assertIn("vk 0x56 scan 0x2f up  : to Windows (menu open)",
                       lines[2])
+        ours["on"] = False                  # typing in another program
+        self.assertEqual(event(0x41, 0x1E), 0)
+        self.assertEqual(len(lines), 3)     # not logged
 
     def test_win32_part_only_on_windows(self):
         import sys

@@ -23,7 +23,7 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
-from .. import __version__
+from .. import __version__, logfile
 from ..rfb import accel
 from ..rfb import encodings as enc
 from ..rfb.connection import (Connection, ConnectionOptions,
@@ -54,6 +54,8 @@ HISTORY_FILE = "history"
 
 
 def log(msg):
+    if logfile.level == logfile.OFF:
+        return
     print("%s: %s" % (time.strftime("%H:%M:%S"), msg), file=sys.stderr,
           flush=True)
 
@@ -297,10 +299,11 @@ class ViewerApp:
         self.pass_win_var = tk.BooleanVar(value=bool(options.passwinkey))
         self.pass_cae_var = tk.BooleanVar(
             value=bool(options.passctrlaltenter))
-        # LogKeys: lines queued by every layer (also the hook thread),
-        # written out by the GUI thread
-        self.log_keys_var = tk.BooleanVar(value=bool(options.logkeys))
-        self.log_keys_on = bool(options.logkeys)   # for the network thread
+        # LogLevel (F8 > Troubleshooting).  At DETAILED, every layer
+        # queues key lines (also the hook thread), the GUI writes them out
+        self.log_level_var = tk.IntVar(value=logfile.clamp(options.loglevel))
+        # plain bool: read by the hook and network threads
+        self.log_keys_on = self.log_level_var.get() >= logfile.DETAILED
         self.key_trace = collections.deque()
         self.key_sent = False
         # Clipboard sharing, each direction on its own (options dialog,
@@ -380,8 +383,9 @@ class ViewerApp:
             self.fatal("Invalid settings:\n\n%s" % e, reconnect=False)
             return 1
         self.saved_settings = self.settings_snapshot()
-        if self.log_keys_var.get():
-            self._log_keys_changed()
+        logfile.set_level(self.log_level_var.get())
+        if self.log_keys_on:
+            self._key_log_header()
         try:
             if self.opts.listen:
                 sock = self._listen()
@@ -1127,7 +1131,7 @@ class ViewerApp:
         return False
 
     def on_key_press(self, event):
-        tracing = self.log_keys_var.get()
+        tracing = self.log_keys_on
         if tracing:
             self.trace_key("tk    press   %s" % self._describe_key(event))
             self.key_sent = False
@@ -1188,20 +1192,34 @@ class ViewerApp:
         while self.key_trace:
             log("Key %s" % self.key_trace.popleft())
 
-    def _log_keys_changed(self):
-        on = self.log_keys_on = bool(self.log_keys_var.get())
-        if self.key_grab:
-            self.key_grab.trace = self.trace_key if on else None
-        if on:
-            log("Key log on: keyboard layout %s, system keys %s, local IME "
-                "%s, menu key %s" % (
-                    kbd.keyboard_layout_name(),
-                    "to the server" if self.system_keys_var.get()
-                    else "local", "on" if self.local_ime_var.get()
-                    else "off", self.opts.menukey or "none"))
-        else:
+    def _log_level_changed(self):
+        """F8 > Troubleshooting: the log level, applied at once."""
+        level = self.log_level_var.get()
+        keys = level >= logfile.DETAILED
+        if self.log_keys_on and not keys:
             self.flush_key_trace()
             log("Key log off")
+        if level == logfile.OFF:
+            log("Log off")
+        was = logfile.level
+        logfile.set_level(level)
+        if was == logfile.OFF and level != logfile.OFF:
+            log("SagatVNC Viewer %s: log on again" % __version__)
+        self.log_keys_on = keys
+        if not keys:
+            self.key_trace.clear()
+        if self.key_grab:
+            self.key_grab.trace = self.trace_key if keys else None
+        if keys:
+            self._key_log_header()
+
+    def _key_log_header(self):
+        log("Key log on: keyboard layout %s, system keys %s, local IME "
+            "%s, menu key %s" % (
+                kbd.keyboard_layout_name(),
+                "to the server" if self.system_keys_var.get()
+                else "local", "on" if self.local_ime_var.get()
+                else "off", self.opts.menukey or "none"))
 
     def _ctrl_alt_held(self, event):
         if sys.platform == "win32":
@@ -1245,7 +1263,7 @@ class ViewerApp:
         g.swallow = bool(self.system_keys_var.get()) and \
             not self.view_only()
         g.menu_vk = menu_key_vk(self.opts.menukey)
-        g.trace = self.trace_key if self.log_keys_var.get() else None
+        g.trace = self.trace_key if self.log_keys_on else None
         g.start()
 
     def ungrab_keyboard(self):
@@ -1283,7 +1301,7 @@ class ViewerApp:
         log("Menu key: %s" % key)
 
     def on_key_release(self, event):
-        tracing = self.log_keys_var.get()
+        tracing = self.log_keys_on
         if tracing:
             self.trace_key("tk    release %s" % self._describe_key(event))
         if self._swallow_fake_lock_key(event):
@@ -1307,7 +1325,7 @@ class ViewerApp:
             error = None
         except OSError as e:
             error = e
-        if self.log_keys_var.get():
+        if self.log_keys_on:
             self.key_sent = True
             self.trace_key("      -> sent press   keysym 0x%x key code 0x%x "
                            "(system 0x%x)%s" % (
@@ -1320,7 +1338,7 @@ class ViewerApp:
             error = None
         except OSError as e:
             sent, error = False, e
-        if self.log_keys_var.get():
+        if self.log_keys_on:
             self.trace_key("      -> %s (system 0x%x)%s" % (
                 "sent release" if sent or error else
                 "release of a key the server doesn't have down, ignored",
@@ -1328,7 +1346,7 @@ class ViewerApp:
 
     def release_all_keys(self):
         """Viewport::resetKeyboard()"""
-        if self.log_keys_var.get() and self.conn and self.conn.down_keys:
+        if self.log_keys_on and self.conn and self.conn.down_keys:
             self.trace_key("      releasing every key still down: %s" %
                            " ".join("0x%x" % c for c in self.conn.down_keys))
         if self.conn:
@@ -1339,7 +1357,7 @@ class ViewerApp:
         self.keyboard.reset()
 
     def on_focus_out(self, event):
-        if self.log_keys_var.get():
+        if self.log_keys_on:
             self.trace_key("focus out")
         self.has_focus = False
         self.ungrab_keyboard()
@@ -1350,7 +1368,7 @@ class ViewerApp:
         """Viewport FL_FOCUS"""
         self.has_focus = True
         self.grab_keyboard()
-        if self.log_keys_var.get():
+        if self.log_keys_on:
             g = self.key_grab
             self.trace_key("focus in, keyboard hook %s" % (
                 "running" if g and g.running else "off"))
@@ -1775,6 +1793,7 @@ class ViewerApp:
             m.add_checkbutton(label="Rust decoders: %s" % accel.reason,
                               variable=self.rust_var, state="disabled")
         m.add_command(label="Connection info...", command=self.show_info)
+        self._build_troubleshooting_menu(submenu("Troubleshooting"))
         m.add_command(label="About SagatVNC Viewer...",
                       command=lambda: dialogs.show_about(self.root))
         m.add_separator()
@@ -1859,8 +1878,17 @@ class ViewerApp:
         self._flash_title("X509 files apply from the next connection")
 
     def open_cert_folder(self):
-        folder = config_dir()
-        os.makedirs(folder, exist_ok=True)
+        self._open_folder(config_dir())
+
+    def open_log_folder(self):
+        self._open_folder(logfile.folder())
+
+    def _open_folder(self, folder):
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError as e:
+            self._flash_title("Can't open %s: %s" % (folder, e.strerror))
+            return
         if sys.platform == "win32":
             os.startfile(folder)
         else:
@@ -1895,11 +1923,22 @@ class ViewerApp:
         sub.add_checkbutton(label="Send Ctrl+Alt+Enter to remote "
                             "(off: full screen)", variable=self.pass_cae_var,
                             command=self._keys_changed)
-        sub.add_separator()
-        sub.add_checkbutton(label="Log key events (troubleshooting)",
-                            variable=self.log_keys_var,
-                            command=self._log_keys_changed)
         self.keys_menu = sub
+
+    def _build_troubleshooting_menu(self, sub):
+        """Not in TigerVNC: the log level (LogLevel) and where the log
+        is."""
+        for value, label in (
+                (logfile.OFF, "Log: off"),
+                (logfile.NORMAL, "Log: normal"),
+                (logfile.DETAILED, "Log: detailed (also every key and "
+                 "clipboard event)")):
+            sub.add_radiobutton(label=label, value=value,
+                                variable=self.log_level_var,
+                                command=self._log_level_changed)
+        sub.add_separator()
+        sub.add_command(label="Open log folder",
+                        command=self.open_log_folder)
 
     def show_menu(self, event):
         self.release_all_keys()
@@ -1964,7 +2003,7 @@ class ViewerApp:
         o.passalttab = bool(self.pass_alt_tab_var.get())
         o.passwinkey = bool(self.pass_win_var.get())
         o.passctrlaltenter = bool(self.pass_cae_var.get())
-        o.logkeys = bool(self.log_keys_var.get())
+        o.loglevel = self.log_level_var.get()
         o.acceptclipboard = bool(self.accept_clip_var.get())
         o.sendclipboard = bool(self.send_clip_var.get())
         o.remotedpiscale = (self.calibrating if self.calibrating is not None
@@ -2273,5 +2312,7 @@ def main(options):
         log("DPI awareness: %s" % awareness)
     log("SagatVNC Viewer %s (Python %s, Tk %s)" %
         (__version__, sys.version.split()[0], tk.TkVersion))
+    if logfile.path:
+        log("Log file: %s (LogLevel %d)" % (logfile.path, logfile.level))
     log("Native decoders: %s" % accel.status)
     return ViewerApp(options).run()

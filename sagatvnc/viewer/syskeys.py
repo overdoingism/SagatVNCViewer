@@ -341,6 +341,13 @@ class SystemKeyGrab:
         self.inactive_reason = "" if info.hwndFocus else "no focus window"
         return bool(info.hwndFocus)
 
+    def _foreground_ours(self):
+        """Is the foreground window one of ours (the desktop, its menu or
+        one of our dialogs)?"""
+        fg = self.u.GetForegroundWindow()
+        return bool(fg) and \
+            self.u.GetWindowThreadProcessId(fg, None) == self.gui_thread
+
     def _menu_owner(self):
         """The window whose popup menu is open, if one of ours is."""
         u = self.u
@@ -407,7 +414,9 @@ class SystemKeyGrab:
                     self._trace(ks, up, "to Windows (local key)%s" % (
                         ", replayed %s" % " ".join("0x%x" % v for v in replay)
                         if replay else ""))
-                else:
+                elif self.trace and self._foreground_ours():
+                    # Keys for other programs stay out of the log: the
+                    # hook sees them while Tk still thinks we have focus
                     self._trace(ks, up, "to Windows (%s)" % (
                         self.inactive_reason if self.swallow
                         else "system keys off"))
