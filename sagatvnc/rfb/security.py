@@ -29,6 +29,82 @@ class SecurityError(Exception):
     pass
 
 
+class CertificateRetry(SecurityError):
+    """The server certificate needs another look, on a new connection.
+
+    Not in upstream: GnuTLS verifies a certificate and still lets
+    CSecurityTLS::checkSession() go on with the same handshake, so
+    CConn::verifyCertificate() can ask the user.  Python's ssl either
+    verifies (and aborts the handshake on any problem) or doesn't verify
+    at all.  So a check that needs both runs as two connections: the
+    caller stores ``mode`` and ``problem`` in ConnectionOptions
+    (certificate_mode, certificate_problem) and connects again."""
+
+    def __init__(self, msg, mode, problem=None):
+        super().__init__(msg)
+        self.mode = mode
+        self.problem = problem
+
+
+# OpenSSL X509_V_ERR_* codes upstream lets the user override
+# (CConn::verifyCertificate's allowed_errors, GnuTLS names in comments);
+# anything else, e.g. a revoked certificate, ends the connection
+CERT_PROBLEMS = {
+    2: "authority", 18: "authority", 19: "authority",   # SIGNER_NOT_FOUND
+    20: "authority", 21: "authority", 24: "authority",  # SIGNER_NOT_CA
+    9: "not_yet_valid",                                 # NOT_ACTIVATED
+    10: "expired",                                      # EXPIRED
+    66: "algorithm", 67: "algorithm", 68: "algorithm",  # INSECURE_ALGORITHM
+    62: "hostname", 64: "hostname",                     # UNEXPECTED_OWNER
+    # UNABLE_TO_GET_CRL: GnuTLS only applies a CRL to the CA that issued
+    # it; OpenSSL wants one for every CA once CRL checking is on
+    3: "crl",
+}
+
+
+def read_known_hosts(path):
+    """``host sha256-fingerprint`` lines (SagatVNC's own format; upstream
+    keeps GnuTLS's x509_known_hosts with the public key)."""
+    known = {}
+    if path and os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) == 2:
+                    known[parts[0]] = parts[1]
+    return known
+
+
+def certificate_details(der):
+    """Subject, issuer and validity of a DER certificate for the user, or
+    {} if this Python can't decode it (the decoder is ssl's own, which
+    only reads files)."""
+    import tempfile
+    try:
+        fd, path = tempfile.mkstemp(suffix=".pem")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(ssl.DER_cert_to_PEM_cert(der))
+            d = ssl._ssl._test_decode_cert(path)
+        finally:
+            os.remove(path)
+    except Exception:
+        return {}
+
+    short = {"commonName": "CN", "organizationName": "O",
+             "organizationalUnitName": "OU", "countryName": "C",
+             "localityName": "L", "stateOrProvinceName": "ST"}
+
+    def name(rdns):
+        return ", ".join("%s=%s" % (short.get(k, k), v)
+                         for rdn in rdns for k, v in rdn)
+    return {"subject": name(d.get("subject", ())),
+            "issuer": name(d.get("issuer", ())),
+            "valid": "%s - %s" % (d.get("notBefore", "?"),
+                                  d.get("notAfter", "?")),
+            "names": ", ".join(v for _, v in d.get("subjectAltName", ()))}
+
+
 def parse_security_types(text, log=lambda msg: None):
     """Parse a TigerVNC SecurityTypes list.
 
@@ -133,6 +209,10 @@ class SecurityHandler:
         self.type_num = None
         self.tls_version = None
         self.tls_cipher = None
+        # How the server certificate was accepted: "ca" (verified against
+        # the trusted CAs), "exception" (accepted by the user before or
+        # now), None (anonymous TLS or no TLS)
+        self.certificate = None
 
     # -- entry point --------------------------------------------------------
     def run(self, sec_type):
@@ -221,10 +301,10 @@ class SecurityHandler:
             self.plain()
 
     def start_tls(self, anon):
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ca = self.conn.options.x509_ca
+        raw = self.conn.stream.sock
         if anon:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
             # Anonymous Diffie-Hellman only exists up to TLS 1.2
             ctx.maximum_version = ssl.TLSVersion.TLSv1_2
@@ -233,52 +313,106 @@ class SecurityHandler:
             except ssl.SSLError:
                 raise SecurityError("This Python/OpenSSL build has no "
                                     "anonymous TLS ciphers")
-        elif ca:
-            ctx.verify_mode = ssl.CERT_REQUIRED
-            ctx.check_hostname = True
-            ctx.load_verify_locations(ca)
+            sock = ctx.wrap_socket(raw)
         else:
-            # Trust on first use, checked against known_hosts below
-            ctx.verify_mode = ssl.CERT_NONE
-        sock = ctx.wrap_socket(self.conn.stream.sock,
-                               server_hostname=None if anon or not ca
-                               else self.conn.host)
+            sock = self._x509_socket(raw)
         self.conn.stream.replace_socket(sock)
         cipher = sock.cipher()
         self.tls_version = sock.version()
         self.tls_cipher = cipher[0] if cipher else None
         self.conn.log("TLS established: %s, %s" %
                       (sock.version(), cipher[0] if cipher else "?"))
-        if not anon and not ca:
-            self._check_known_host(sock)
         self.secure = not anon
 
-    def _check_known_host(self, sock):
+    def _verifying_context(self):
+        """CSecurityTLS::setParam(): the system's trusted CAs, plus X509CA
+        and X509CRL; a file that fails to load is logged, not fatal."""
+        opts = self.conn.options
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        ctx.check_hostname = True
+        try:
+            ctx.load_default_certs()
+        except (OSError, ssl.SSLError):
+            self.conn.log("Failed to load the system certificate trust store")
+        for path, what in ((opts.x509_ca, "certificate authority"),
+                           (opts.x509_crl, "certificate revocation list")):
+            if not path or not os.path.exists(path):
+                continue
+            try:
+                ctx.load_verify_locations(cafile=path)
+            except (OSError, ssl.SSLError) as e:
+                self.conn.log("Failed to load the user specified %s "
+                              "(%s): %s" % (what, path, e))
+                continue
+            if path == opts.x509_crl:
+                ctx.verify_flags |= ssl.VERIFY_CRL_CHECK_LEAF
+        return ctx
+
+    def _x509_socket(self, raw):
+        """CSecurityTLS::checkSession() + CConn::verifyCertificate().
+
+        ``certificate_mode`` "auto": a host with a stored exception is
+        checked against it; any other host is verified.  "verify": verify
+        (an excepted host showed another certificate).  "ask": a
+        verification found ``certificate_problem``; ask the user, as
+        upstream does, and store the exception."""
+        opts = self.conn.options
+        host = self.conn.host
+        known = read_known_hosts(opts.known_hosts)
+        mode = opts.certificate_mode
+        if mode == "verify" or (mode == "auto" and host not in known):
+            ctx = self._verifying_context()
+            try:
+                sock = ctx.wrap_socket(raw, server_hostname=host)
+            except ssl.SSLCertVerificationError as e:
+                msg = e.verify_message or str(e)
+                self.conn.log("Server certificate problem: %s" % msg)
+                kind = CERT_PROBLEMS.get(e.verify_code)
+                if kind is None:
+                    raise SecurityError("Invalid server certificate: %s" %
+                                        msg)
+                raise CertificateRetry("Server certificate: %s" % msg,
+                                       "ask", (kind, msg))
+            self.conn.log("Server certificate verified")
+            self.certificate = "ca"
+            return sock
+
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        sock = ctx.wrap_socket(raw)
+        # The stream owns it from now on, so closing the connection closes
+        # it even when a check below gives up
+        self.conn.stream.replace_socket(sock)
         der = sock.getpeercert(binary_form=True)
         if not der:
             raise SecurityError("The server did not present a certificate")
         fp = hashlib.sha256(der).hexdigest()
-        path = self.conn.options.known_hosts
-        host = self.conn.host
-        known = {}
-        if path and os.path.exists(path):
-            with open(path, encoding="utf-8") as f:
-                for line in f:
-                    parts = line.split()
-                    if len(parts) == 2:
-                        known[parts[0]] = parts[1]
         if known.get(host) == fp:
-            return
-        info = {"host": host, "fingerprint": fp,
-                "changed": host in known}
+            self.conn.log("Server has an existing security exception")
+            self.certificate = "exception"
+            return sock
+        if mode == "auto":
+            # Another certificate than the one excepted: if it verifies,
+            # upstream takes it without asking
+            self.conn.log("Server host certificate has changed")
+            raise CertificateRetry("The server certificate has changed",
+                                   "verify")
+        info = {"host": host, "fingerprint": fp, "changed": host in known,
+                "problem": opts.certificate_problem}
+        info.update(certificate_details(der))
         if not self.conn.verify_certificate(info):
             raise SecurityError("The server certificate was not accepted")
+        self.certificate = "exception"
+        path = opts.known_hosts
         if path:
             known[host] = fp
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
                 for h, v in known.items():
                     f.write("%s %s\n" % (h, v))
+        return sock
 
 
 def connect_socket(host, port, timeout=None, register=None):

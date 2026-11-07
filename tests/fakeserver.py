@@ -249,10 +249,12 @@ class FakeServer:
     def send(self, data):
         self.sock.sendall(data)
 
-    def handshake(self, offer=None, vencrypt=(1, 2)):
+    def handshake(self, offer=None, vencrypt=(1, 2), tls=None):
         """``offer``: security types to offer (default: None, or VncAuth
-        with a password); VeNCrypt (19) then offers ``vencrypt`` sub-types
-        (no TLS ones).  ``self.chosen`` records what the client picked."""
+        with a password); VeNCrypt (19) then offers ``vencrypt`` sub-types,
+        the TLS/X509 ones (257-262) with ``tls``, a server-side
+        ssl.SSLContext.  ``self.chosen`` records what the client picked,
+        ``self.plain`` the (user, password) of Plain."""
         self.send(b"RFB 003.008\n")
         assert self.recv(12) == b"RFB 003.008\n"
         if offer is None:
@@ -269,6 +271,19 @@ class FakeServer:
             chosen = struct.unpack(">I", self.recv(4))[0]
             assert chosen in vencrypt, chosen
             self.chosen.append(chosen)
+            if 257 <= chosen <= 262:
+                self.send(b"\x01")             # ready for TLS
+                assert not self.buf
+                self.sock = tls.wrap_socket(self.sock, server_side=True)
+                chosen = {257: 1, 260: 1, 258: 2, 261: 2}.get(chosen, 256)
+        if chosen == 256:
+            ulen, plen = struct.unpack(">II", self.recv(8))
+            self.plain = (self.recv(ulen).decode(), self.recv(plen).decode())
+            if self.password is not None and \
+                    self.plain[1] != self.password:
+                reason = b"Wrong password"
+                self.send(struct.pack(">II", 1, len(reason)) + reason)
+                return False
         if chosen == 2:
             challenge = os.urandom(16)
             self.send(challenge)

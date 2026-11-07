@@ -74,8 +74,12 @@ class ConnectionOptions:
     shared: bool = False
     security_types: list = field(default_factory=lambda: [
         enc.SEC_NAMES[n] for n in enc.DEFAULT_SECURITY.split(",")])
-    x509_ca: str = ""
+    x509_ca: str = ""             # CA file(s) trusted besides the system's
+    x509_crl: str = ""
     known_hosts: str = ""
+    # Certificate check for the next connection (security.CertificateRetry)
+    certificate_mode: str = "auto"
+    certificate_problem: tuple = None   # (kind, OpenSSL's message)
     auto_select: bool = True
     preferred_encoding: int = enc.TIGHT
     # Seconds to wait for each answer from the server until the session

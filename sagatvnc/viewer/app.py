@@ -11,6 +11,7 @@
 # (at your option) any later version.
 """The Tk viewer application: desktop window, input and the F8 menu."""
 
+import copy
 import os
 import queue
 import socket
@@ -26,7 +27,8 @@ from ..rfb import encodings as enc
 from ..rfb.connection import (Connection, ConnectionOptions,
                               DroppedBeforeSession)
 from ..rfb.des import deobfuscate_password
-from ..rfb.security import AuthFailure, connect_socket, parse_security_types
+from ..rfb.security import (AuthFailure, CertificateRetry, connect_socket,
+                             parse_security_types)
 from ..rfb.stream import ConnectionClosed
 from . import configfile, dialogs, icon
 from . import keyboard as kbd
@@ -151,6 +153,7 @@ class ConnectionHandler:
 
 STATS_MS = 1000        # title bar statistics refresh
 CONNECTING_DELAY_MS = 400   # connecting window only if it takes longer
+UNSAVED_COLOUR = "#b34700"  # F8 menu: Save settings with unsaved changes
 
 
 def security_summary(sec):
@@ -268,6 +271,16 @@ class ViewerApp:
         self.pass_win_var = tk.BooleanVar(value=bool(options.passwinkey))
         self.pass_cae_var = tk.BooleanVar(
             value=bool(options.passctrlaltenter))
+        # Clipboard sharing, each direction on its own (options dialog,
+        # Input tab: "Accept clipboard from server" / "Send clipboard to
+        # server")
+        self.accept_clip_var = tk.BooleanVar(
+            value=bool(options.acceptclipboard))
+        self.send_clip_var = tk.BooleanVar(value=bool(options.sendclipboard))
+        # What the settings file holds (or would, for a new one), to mark
+        # Save settings in the menu when something changed since
+        self.saved_settings = None
+        self.save_index = None
         self.key_policy = syskeys.KeyPolicy(
             bool(options.passprintscreen), bool(options.passalttab),
             bool(options.passwinkey))
@@ -334,6 +347,7 @@ class ViewerApp:
         except ValueError as e:
             self.fatal("Invalid settings:\n\n%s" % e, reconnect=False)
             return 1
+        self.saved_settings = self.settings_snapshot()
         try:
             if self.opts.listen:
                 sock = self._listen()
@@ -387,7 +401,16 @@ class ViewerApp:
                 log("Unknown PreferredSecurity %r, ignored" % pref)
             self.preferred_security = chosen
         co.preferred_security = chosen
-        co.x509_ca = o.x509ca
+        # CSecurityTLS::X509CA / X509CRL: default files in the config
+        # directory, used if they exist
+        for attr, value, default in (("x509_ca", o.x509ca, "x509_ca.pem"),
+                                     ("x509_crl", o.x509crl, "x509_crl.pem")):
+            path = os.path.expanduser(value.strip()) if value.strip() else \
+                os.path.join(config_dir(), default)
+            if value.strip() and not os.path.exists(path):
+                log("%s file not found: %s" % (attr.upper().replace("_", ""),
+                                               path))
+            setattr(co, attr, path)
         co.known_hosts = os.path.join(config_dir(), "x509_known_hosts")
         co.auto_select = bool(o.autoselect)
         pe = o.preferredencoding.strip()
@@ -470,6 +493,8 @@ class ViewerApp:
             self.handler.events.put(("closed", "cancelled"))
         except SwitchSecurity as e:
             self.handler.events.put(("switch", e.args[0]))
+        except CertificateRetry as e:
+            self.handler.events.put(("certretry", e))
         except AuthFailure as e:
             self.saved_credentials = None
             self.handler.events.put(("error", "Failed to authenticate with "
@@ -606,20 +631,10 @@ class ViewerApp:
             self._pause_connecting(False)
 
     def _ask_certificate(self, info):
-        if info["changed"]:
-            msg = ("The certificate of %s has CHANGED since you last "
-                   "connected!\n\nSHA-256 fingerprint:\n%s\n\nSomeone may "
-                   "be intercepting the connection.  Accept the new "
-                   "certificate anyway?" % (info["host"], info["fingerprint"]))
-            icon = "warning"
-        else:
-            msg = ("The server %s presented a certificate that is not "
-                   "known yet.\n\nSHA-256 fingerprint:\n%s\n\nDo you want to "
-                   "trust it and continue?" % (info["host"],
-                                              info["fingerprint"]))
-            icon = "question"
-        return messagebox.askyesno("Unknown certificate", msg, icon=icon,
-                                   parent=self.root)
+        """CConn::verifyCertificate(): make an exception for it?"""
+        title, text = dialogs.certificate_question(info)
+        log("%s: %s" % (title, text.replace("\n\n", " | ")))
+        return bool(dialogs.CertificateDialog(self.root, info).run())
 
     # -- event pump ----------------------------------------------------------
     def poll(self):
@@ -659,6 +674,18 @@ class ViewerApp:
                 elif kind == "switch":
                     log("Reconnecting with security type %s" %
                         enc.sec_name(ev[1]))
+                    self.conn.close()
+                    self.reconnect()
+                    return
+                elif kind == "certretry":
+                    # Checking the certificate takes a second connection
+                    # (security.CertificateRetry)
+                    co = self.conn_options
+                    co.certificate_mode = ev[1].mode
+                    co.certificate_problem = ev[1].problem
+                    log("%s; connecting again to %s" %
+                        (ev[1], "verify it" if ev[1].mode == "verify"
+                         else "ask about it"))
                     self.conn.close()
                     self.reconnect()
                     return
@@ -755,6 +782,9 @@ class ViewerApp:
 
     def create_desktop(self, width, height, name):
         self._close_connecting()
+        # The next connection checks the certificate from scratch
+        self.conn_options.certificate_mode = "auto"
+        self.conn_options.certificate_problem = None
         first = self.traffic is None
         self.set_title(name)
         if first:
@@ -1584,6 +1614,13 @@ class ViewerApp:
                             command=self.apply_local_ime,
                             state="normal" if sys.platform == "win32"
                             else "disabled")
+        sub.add_separator()
+        sub.add_checkbutton(label="Accept clipboard from remote",
+                            variable=self.accept_clip_var,
+                            command=self._clipboard_changed)
+        sub.add_checkbutton(label="Send clipboard to remote",
+                            variable=self.send_clip_var,
+                            command=self._clipboard_changed)
         m.add_separator()
 
         # -- keyboard: where keys go, and keys you can't press here
@@ -1597,6 +1634,7 @@ class ViewerApp:
         m.add_command(label="Refresh screen", command=self.refresh)
         m.add_separator()
         m.add_command(label="Save settings", command=self.save_settings)
+        self.save_index = m.index("end")
         m.add_command(label="Save settings as...",
                       command=self.save_settings_as)
         m.add_separator()
@@ -1647,6 +1685,7 @@ class ViewerApp:
 
     def show_menu(self, event):
         self.release_all_keys()
+        self.mark_unsaved()
         x = self.canvas.winfo_rootx() + 20
         y = self.canvas.winfo_rooty() + 20
         try:
@@ -1687,10 +1726,12 @@ class ViewerApp:
              compress if compress >= 0 else "server default"))
 
     # -- saving settings (ServerDialog::handleSaveAs) ----------------------
-    def sync_options(self):
-        """Copy what the F8 menu changed back into the parameters, as
-        upstream's menu and options dialog set them (e.g. fullScreen)."""
-        o = self.opts
+    def sync_options(self, o=None):
+        """Copy what the F8 menu changed back into the parameters (or into
+        ``o``), as upstream's menu and options dialog set them (e.g.
+        fullScreen)."""
+        if o is None:
+            o = self.opts
         o.fullscreen = bool(self.fullscreen_var.get())
         o.viewonly = bool(self.viewonly_var.get())
         o.scaling = "Auto" if self.scaling_var.get() else "Off"
@@ -1704,6 +1745,8 @@ class ViewerApp:
         o.passalttab = bool(self.pass_alt_tab_var.get())
         o.passwinkey = bool(self.pass_win_var.get())
         o.passctrlaltenter = bool(self.pass_cae_var.get())
+        o.acceptclipboard = bool(self.accept_clip_var.get())
+        o.sendclipboard = bool(self.send_clip_var.get())
         o.remotedpiscale = (self.calibrating if self.calibrating is not None
                             else self.remote_dpi_var.get())
         o.remotecursorshape = bool(self.remote_cursor_var.get())
@@ -1721,6 +1764,32 @@ class ViewerApp:
         o.customcompresslevel = compress >= 0
         if compress >= 0:
             o.compresslevel = compress
+
+    def settings_snapshot(self):
+        """The parameters Save settings would write now (without touching
+        self.opts)."""
+        from .parameters import PARAMS
+        o = copy.copy(self.opts)
+        self.sync_options(o)
+        return tuple(getattr(o, p.name.lower()) for p in PARAMS
+                     if p.name != "listen")
+
+    def unsaved_changes(self):
+        return (self.saved_settings is not None and
+                self.settings_snapshot() != self.saved_settings)
+
+    def mark_unsaved(self):
+        """Not in TigerVNC (no Save in its menu).  A marker in front and a
+        note behind, in a warm colour, set each time the menu opens: popup
+        menus can't blink, and a colour alone wouldn't say what it means."""
+        if self.menu is None or self.save_index is None:
+            return
+        dirty = self.unsaved_changes()
+        self.menu.entryconfigure(
+            self.save_index,
+            label="\u25b6 Save settings  (unsaved changes)" if dirty
+            else "Save settings",
+            foreground=UNSAVED_COLOUR if dirty else "")
 
     def save_settings(self):
         """Save to the .tigervnc file this session came from; without one,
@@ -1766,7 +1835,28 @@ class ViewerApp:
                 "configuration file:\n\n%s" % e, parent=self.root)
             return False
         log("Saved settings to %s" % path)
+        self.saved_settings = self.settings_snapshot()
         return True
+
+    def _clipboard_changed(self):
+        """AcceptClipboard / SendClipboard from the menu."""
+        o = self.opts
+        o.acceptclipboard = bool(self.accept_clip_var.get())
+        send = bool(self.send_clip_var.get())
+        if send and not o.sendclipboard:
+            # Like a new connection: only what is copied from now on goes
+            # to the server, not what was copied while sharing was off
+            try:
+                self.last_clipboard = self.root.clipboard_get()
+            except tk.TclError:
+                self.last_clipboard = None
+        elif not send and self.conn:
+            # Don't hand over what was announced before it was switched off
+            self.conn.local_clipboard = None
+        o.sendclipboard = send
+        log("Clipboard: %s from remote, %s to remote" %
+            ("accept" if o.acceptclipboard else "ignore",
+             "send" if send else "don't send"))
 
     def _flash_title(self, note, ms=2500):
         """Confirm a save in the title bar instead of a dialog."""

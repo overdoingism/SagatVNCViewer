@@ -132,7 +132,9 @@ again (or Esc) to close it:
   resized*, remote DPI compensation, *Traffic in title bar*
 - *Picture quality*: automatic (recommended), encoding, color depth,
   JPEG (Tight only), zlib level (Tight and ZRLE)
-- *Input*: view only, remote cursor shape, local input method (IME)
+- *Input*: view only, remote cursor shape, local input method (IME),
+  *Accept clipboard from remote* and *Send clipboard to remote*
+  (`AcceptClipboard`, `SendClipboard`: each direction on its own)
 - *Keyboard* (menu key F7-F12, and which special keys go to the remote
   computer, see below), Send F8, Send Ctrl-Alt-Del
 - Refresh screen
@@ -200,7 +202,9 @@ connection.
 `.tigervnc` file the session was opened from (or asks where, if there was
 none). *Save settings as...* writes a new file. Parameters SagatVNC does
 not know (TigerVNC-only ones) and comments in an existing file are kept.
-Passwords are never saved.
+Passwords are never saved. While something differs from what was last
+loaded or saved, the menu shows *▶ Save settings (unsaved changes)* in
+orange.
 
 ### Which encoding?
 
@@ -239,9 +243,28 @@ dialog. JPEG needs Pillow (bundled in
 the exe).  (Scaling to the window is an addition that
 TigerVNC itself does not have.)
 
-When X509 certificates are used without `-X509CA`, they are trusted on first
-use. The fingerprints are stored in `%APPDATA%\SagatVNC\x509_known_hosts` on
-Windows, or `~/.config/sagatvnc/x509_known_hosts` elsewhere.
+### X509 certificates
+
+X509None/X509Vnc/X509Plain need no files on the viewer side. As in
+TigerVNC, the server's certificate is checked against the system's
+trusted CAs plus, if they exist, `x509_ca.pem` (extra CAs) and
+`x509_crl.pem` (revocation list) in the SagatVNC folder
+(`%APPDATA%\SagatVNC` on Windows, `~/.config/sagatvnc` elsewhere), or
+the files named by `X509CA` / `X509CRL` on the command line or in a
+`.tigervnc` file. There is no options dialog to pick them yet.
+
+A certificate that checks out is used without a question. One that
+doesn't (unknown or self-signed issuer, wrong host name, expired or not
+yet valid, weak algorithm) brings up TigerVNC's question with the
+certificate's details and SHA-256 fingerprint; *Add exception* remembers
+it in `x509_known_hosts` in the same folder, and later connections take
+it silently. A revoked certificate is refused outright. If a remembered
+server shows a different certificate, it is accepted silently only if it
+checks out; otherwise you are warned that it changed.
+
+Python's TLS can't check a certificate and then go on with the same
+handshake, so asking takes a second connection (servers don't mind; the
+log says "connecting again").
 
 ## Tests
 

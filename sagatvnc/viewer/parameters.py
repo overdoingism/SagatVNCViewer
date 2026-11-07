@@ -108,8 +108,13 @@ PARAMS = [
     Param("PasswordFile", str, "", "Password file for VNC authentication",
           aliases=("passwd",)),
     Param("X509CA", str, "",
-          "X509 CA certificate file (otherwise server certificates are "
-          "trusted on first use)"),
+          "X509 CA certificate file, trusted besides the system's CAs "
+          "(default: x509_ca.pem in the SagatVNC config folder, if it "
+          "exists). Certificates that don't verify can be accepted as "
+          "an exception"),
+    Param("X509CRL", str, "",
+          "X509 CRL file (default: x509_crl.pem in the SagatVNC config "
+          "folder, if it exists)"),
     Param("AutoSelect", bool, True, "Auto select encoding"),
     Param("PreferredEncoding", str, "Tight",
           "Preferred encoding to use (Tight, JPEG, ZRLE, Hextile, Raw)"),

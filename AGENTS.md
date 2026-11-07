@@ -24,7 +24,7 @@ sagatvnc/
   rfb/                 protocol only, NO GUI imports (keep it that way)
     connection.py      CConnection/CMsgReader/CMsgWriter equivalent; runs
                        on a worker thread, reports via a handler object
-    security.py        None, VncAuth, Plain, VeNCrypt (+TLS/X509, TOFU)
+    security.py        None, VncAuth, Plain, VeNCrypt (+TLS/X509)
     decoders.py        Raw, CopyRect, RRE, CoRRE, Hextile, ZRLE, Tight
     framebuffer.py     RGB (3 bytes/pixel) buffer guarded by an RLock
     pixelformat.py     PIXEL_FORMAT + rgbx_to_rgb
@@ -162,7 +162,23 @@ Deliberate differences from upstream, kept on purpose:
   has "Save as..." in the connection dialog). It saves the menu state
   (`sync_options`) with saveViewerParameters' rule (defaults skipped), but
   keeps lines it doesn't know from the existing file, because this port
-  doesn't implement every TigerVNC parameter.
+  doesn't implement every TigerVNC parameter. When the menu opens,
+  `mark_unsaved` compares `settings_snapshot()` with what was loaded or
+  last saved and marks the entry (arrow, note, orange).
+- **X509 certificates** follow CSecurityTLS::checkSession and
+  CConn::verifyCertificate: system CAs + X509CA + X509CRL (defaults
+  `x509_ca.pem` / `x509_crl.pem` in config_dir, used if present); a
+  certificate that verifies is taken silently, overridable problems
+  (`security.CERT_PROBLEMS`) ask, anything else (revoked) is fatal.
+  Python's ssl aborts a handshake that fails verification, so a check that
+  needs the user costs a second connection: `CertificateRetry` carries
+  `certificate_mode` ("auto" -> "verify" -> "ask") and the problem into
+  ConnectionOptions and the viewer reconnects; `create_desktop` resets
+  them. OpenSSL reports only the first problem, so the user gets one
+  question where upstream may ask several. `x509_known_hosts` stores
+  `host sha256-of-certificate`, not GnuTLS's public-key format.
+  tests/test_x509.py runs real TLS with the certificates in
+  tests/data/x509 (make_certs.sh regenerates them).
 - Python-only extras: scaling, RemoteDpiScale and its calibration, the
   IME toggle, DPI awareness, rotating logs, session summaries, the icon.
 
@@ -297,8 +313,8 @@ read pixels back with `app.image.get(x, y)`.
   that uses the encoders in `fakeserver.py`.
 
 ## Roadmap ideas
-Remaining items from the fidelity audit: X509 trust store/CRL/TOFU keyed on
-the public key (upstream format), ExtendedMouseButtons, QEMUAudio,
+Remaining items from the fidelity audit: x509_known_hosts keyed on the
+public key (upstream format), ExtendedMouseButtons, QEMUAudio,
 multi-monitor full screen,
 `default.tigervnc` at startup, only the GUI subset of parameters from
 .tigervnc files, repaint during long updates.

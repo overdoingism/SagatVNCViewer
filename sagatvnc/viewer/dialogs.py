@@ -43,6 +43,7 @@ SECURE_COLOUR = "#1e7b34"
 CAUTION_COLOUR = "#9a6700"
 INSECURE_COLOUR = "#c5221f"
 HINT_COLOUR = "#5f6368"
+CERT_TEXT_WIDTH = 400  # certificate question, in points
 
 
 def _styles(widget):
@@ -257,6 +258,105 @@ class ServerDialog(_Modal):
         if not self.result:
             return
         self.destroy()
+
+
+CERT_TITLES = {
+    "authority": "Unknown certificate issuer",
+    "not_yet_valid": "Certificate is not yet valid",
+    "expired": "Expired certificate",
+    "algorithm": "Insecure certificate algorithm",
+    "hostname": "Certificate hostname mismatch",
+    "crl": "Certificate revocation unknown",
+}
+_CERT_NEW = {
+    "authority": "This certificate has been signed by an unknown "
+                 "authority:",
+    "not_yet_valid": "This certificate is not yet valid:",
+    "expired": "This certificate has expired:",
+    "algorithm": "This certificate uses an insecure algorithm:",
+    "hostname": "The specified hostname \"%s\" does not match the "
+                "certificate provided by the server:",
+    # Not in upstream (see security.CERT_PROBLEMS)
+    "crl": "Whether this certificate was revoked can't be checked: the "
+           "revocation list (X509CRL) has no list from its issuer:",
+}
+_CERT_CHANGED = {
+    "authority": "has been signed by an unknown authority",
+    "not_yet_valid": "is not yet valid",
+    "expired": "has expired",
+    "algorithm": "uses an insecure algorithm",
+    "hostname": "does not match the hostname \"%s\"",
+    "crl": "can't be checked for revocation",
+}
+
+
+def certificate_question(info):
+    """(title, text) for a certificate the user may make an exception for,
+    as CConn::verifyCertificate() words it.  ``info``: host, fingerprint,
+    changed, problem (kind, OpenSSL's message) and, if they could be read,
+    subject, issuer, valid, names."""
+    kind, detail = info.get("problem") or ("authority", "")
+    host = info["host"]
+    if info.get("changed"):
+        title = "Unexpected server certificate"
+        lead = ("This host is previously known with a different "
+                "certificate, and the new certificate %s:" %
+                _CERT_CHANGED.get(kind, "has a problem"))
+    else:
+        title = CERT_TITLES.get(kind, "Server certificate problem")
+        lead = _CERT_NEW.get(kind, "This certificate has a problem:")
+    if "%s" in lead:
+        lead = lead % host
+    cert = ["%s: %s" % (label, info[key]) for key, label in (
+        ("subject", "Subject"), ("issuer", "Issuer"), ("valid", "Valid"),
+        ("names", "Names")) if info.get(key)]
+    fp = info["fingerprint"]
+    cert.append("SHA-256: %s" % " ".join(fp[i:i + 16]
+                                         for i in range(0, len(fp), 16)))
+    if detail:
+        cert.append("(%s)" % detail)
+    text = "\n\n".join((
+        lead, "\n".join(cert),
+        "Someone could be trying to impersonate the site and you should "
+        "not continue.",
+        "Do you want to make an exception for this server?"))
+    return title, text
+
+
+class CertificateDialog(_Modal):
+    """CConn::verifyCertificate()'s question: Cancel or Add exception
+    (Cancel is the default, as nothing should be accepted by a stray
+    Return)."""
+
+    def __init__(self, parent, info):
+        title, text = certificate_question(info)
+        super().__init__(parent, title)
+        self.header(title, info["host"], subtitle_style="Insecure.TLabel")
+        frame = self.body()
+        lead, cert, rest = text.split("\n\n", 2)
+        # Points, so the width follows the DPI like the fonts do
+        wrap = "%dp" % CERT_TEXT_WIDTH
+        ttk.Label(frame, text=lead, wraplength=wrap, justify="left").grid(
+            row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(frame, text=cert, justify="left",
+                  font=("Consolas", 9), wraplength=wrap).grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=GAP)
+        ttk.Label(frame, text=rest, wraplength=wrap, justify="left").grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(0, GAP))
+        self.button_bar([("Add exception", self.accept),
+                         ("Cancel", self.cancel)])
+        self.initial_focus = self.buttons["Cancel"]
+
+    def accept(self):
+        self.result = True
+        self.destroy()
+
+    def ok(self):
+        """Return: the focused button, which starts out as Cancel."""
+        if self.focus_get() is self.buttons["Add exception"]:
+            self.accept()
+        else:
+            self.cancel()
 
 
 def security_choice_label(name, num):
