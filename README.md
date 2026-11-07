@@ -177,6 +177,17 @@ paste that does nothing looks just like a lost V. If the log shows the
 key sent, look at the server: TigerVNC's winvnc logs keys with
 `Log=*:file:100`, x0vncserver and Xvnc with `-Log *:stderr:100`.
 
+With x0vncserver, start it with `-RawKeyboard=1`. Without it,
+x0vncserver looks for a key that gives the received character under the
+remote's current Shift / Caps Lock state. When none does (Caps Lock
+differs on the two sides, for instance), it puts the letter on a spare
+key code. These leftovers stay in the keymap and can shadow the real key:
+V then always arrives as, say, key code 8. Programs that match Ctrl+letter
+shortcuts by key position (Electron apps) ignore Ctrl+V, while typing
+and other programs still work. With `-RawKeyboard=1` it uses the
+key's scan code, which this viewer always sends. The keys then follow
+the server's keyboard layout.
+
 The title bar shows the live traffic and what the session uses, e.g.
 `UP: 0.4 KiB/s DL: 2.1 MiB/s   2560x1600 Tight+JPEG 24bit TLSVnc TLSv1.2`
 (remote size, the encodings of the last update, color depth, the security
