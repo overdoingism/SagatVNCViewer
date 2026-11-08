@@ -59,6 +59,8 @@ licenses/              licence texts: TigerVNC's (upstream LICENCE.TXT),
                        and without accel), release.yml (v* tag: wheels via
                        cibuildwheel on Linux/macOS, sdist, exe,
                        attestations, release)
+setting_guide/         user docs: connecting, security, encodings, keys
+troubleshooting/       user docs: DPI, pointer, lost keys, login screen
 tests/                 unittest; fakeserver.py = encoders + scripted server
 upstream/tigervnc/     reference checkout of TigerVNC (git-ignored)
 ```

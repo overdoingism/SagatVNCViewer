@@ -55,7 +55,12 @@ python -m sagatvnc myhost:1
 python -m sagatvnc -help        # 所有選項
 ```
 
-選項名稱和 TigerVNC 的 `vncviewer` 相同。細節（DPI、輸入法、特殊按鍵、憑證等）請看英文 [README](README.md)。
+選項名稱和 TigerVNC 的 `vncviewer` 相同。
+
+更多說明（英文）：
+
+- [設置指南](setting_guide/)：連線、安全類型、X509 憑證、畫面編碼、特殊按鍵
+- [問題排除](troubleshooting/)：高 DPI 縮放、游標偏移、Ctrl+V 只送出 Ctrl、視窗縮放、Windows 登入畫面斷線
 
 ## 自己編譯
 
