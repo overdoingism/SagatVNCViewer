@@ -88,9 +88,13 @@ jobs:
           mkdir "$RUNNER_TEMP/t" && cp -r tests "$RUNNER_TEMP/t/" && cd "$RUNNER_TEMP/t"
           "$py" -c "import sys; from sagatvnc.rfb import accel; print(accel.status); sys.exit(accel.lib is None)"
           "$py" -m unittest tests.test_accel
+      # On macOS the same download is avoided with uv (`uv venv`)
+      - if: runner.os == 'macOS'
+        run: python3 -m pip install --break-system-packages uv || python3 -m pip install uv
       - if: runner.os != 'Windows'
         uses: pypa/cibuildwheel@f9b966cfadf4109556cadc5bb39ddb72d0ce664e # v4.3.5
         env:
+          CIBW_BUILD_FRONTEND_MACOS: "build[uv]"
           # One build per platform: the wheel is py3-none-<platform>
           CIBW_BUILD: "cp313-*"
           CIBW_SKIP: "*-musllinux_*"
