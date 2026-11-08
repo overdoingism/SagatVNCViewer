@@ -108,7 +108,7 @@ In [troubleshooting/](troubleshooting/):
 - [Pointer drifting off on Windows servers](troubleshooting/README.md#pointer-drifting-off-on-windows-servers)
 - [Ctrl+V reaches the server as Ctrl](troubleshooting/README.md#ctrlv-reaches-the-server-as-ctrl) (x0vncserver `-RawKeyboard=1`)
 - [Resizing the window: remote resolution or scaling?](troubleshooting/README.md#resizing-the-window-remote-resolution-or-scaling)
-- [Disconnected at the Windows login / lock screen](troubleshooting/README.md#disconnected-at-the-windows-login--lock-screen) (a TigerVNC limitation)
+- [Disconnected at the Windows login / lock screen](troubleshooting/README.md#disconnected-at-the-windows-login--lock-screen) (use UltraVNC)
 
 ## Building
 

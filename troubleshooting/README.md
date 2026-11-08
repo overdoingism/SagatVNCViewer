@@ -50,6 +50,7 @@ If the **clicks** land in the wrong place:
   often differs from the Windows scale, and too large a value shrinks
   the area the cursor can reach. Keep it with `RemoteDpiScale=N`
   (`DPI=N` in a `.tigervnc` file).
+- **Or switch servers:** UltraVNC is DPI aware and needs neither.
 
 ## Ctrl+V reaches the server as Ctrl
 
@@ -88,3 +89,13 @@ When someone presses a key or clicks on the lock screen, Windows switches
 to the secure Winlogon desktop for the password box. winvnc can't follow
 it and drops every client. Until someone logs in locally, new connections
 are cut off right after authentication. The viewer can't work around it.
+
+**Fix: use [UltraVNC](https://uvnc.com/) server instead of winvnc.**
+Install it as a system service; it follows the login screen and UAC
+prompts. Two things to know:
+
+- **Security: VncAuth only.** It's the only UltraVNC login that works
+  with this viewer (turn off *Require MS Logon*). VncAuth isn't
+  encrypted, so outside a trusted LAN use a VPN or an SSH tunnel.
+- **No DPI calibration needed.** UltraVNC is DPI aware: leave *Remote
+  DPI compensation* off.

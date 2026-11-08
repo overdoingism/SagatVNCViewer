@@ -60,7 +60,7 @@ python -m sagatvnc -help        # 所有選項
 更多說明（英文）：
 
 - [設置指南](setting_guide/)：連線、安全類型、X509 憑證、畫面編碼、特殊按鍵
-- [問題排除](troubleshooting/)：高 DPI 縮放、游標偏移、Ctrl+V 只送出 Ctrl、視窗縮放、Windows 登入畫面斷線
+- [問題排除](troubleshooting/)：高 DPI 縮放、游標偏移、Ctrl+V 只送出 Ctrl、視窗縮放、Windows 登入畫面斷線（改用 UltraVNC）
 
 ## 自己編譯
 
