@@ -57,7 +57,8 @@ licenses/              licence texts: TigerVNC's (upstream LICENCE.TXT),
                        OpenSSL, Rust std (shipped with wheels and exe)
 .github/workflows/     ci.yml (tests on Win/Linux/macOS, x64+ARM, with
                        and without accel), release.yml (v* tag: wheels via
-                       cibuildwheel, sdist, exe, attestations, release)
+                       cibuildwheel on Linux/macOS, sdist, exe,
+                       attestations, release)
 tests/                 unittest; fakeserver.py = encoders + scripted server
 upstream/tigervnc/     reference checkout of TigerVNC (git-ignored)
 ```
