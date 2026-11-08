@@ -52,7 +52,7 @@ from .decoders import JPEG_AVAILABLE, DecodeError, make_decoders
 from .framebuffer import FrameBuffer
 from .pixelformat import LOW_COLOUR_LEVELS, PixelCodec, PixelFormat
 from .security import AuthFailure, SecurityError, SecurityHandler
-from .stream import ConnectionClosed, Stream
+from .stream import ConnectionClosed, Stream, abort_socket
 
 
 class ProtocolError(Exception):
@@ -315,10 +315,7 @@ class Connection:
 
     def close(self):
         self.closed = True
-        try:
-            self.stream.sock.close()
-        except OSError:
-            pass
+        abort_socket(self.stream.sock)
 
     # -- handshake (CConnection::processVersionMsg ... processInitMsg) -------
     def _enabled_sec_types(self):

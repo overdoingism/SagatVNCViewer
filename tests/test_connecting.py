@@ -12,6 +12,7 @@ import unittest
 from sagatvnc.rfb.connection import (Connection, ConnectionOptions,
                                      ServerTimeout)
 from sagatvnc.rfb.security import connect_socket, parse_security_types
+from sagatvnc.rfb.stream import abort_socket
 
 from tests.test_rfb import RecordingHandler
 
@@ -89,6 +90,31 @@ class ConnectSocketTest(unittest.TestCase):
         self.addCleanup(sock.close)
         self.assertEqual(seen, [sock])
         self.assertIsNone(sock.gettimeout())
+
+    def test_close_wakes_a_blocked_reader(self):
+        """Connection.close / Cancel: on Linux and macOS close() alone
+        leaves a recv() in another thread waiting for the peer."""
+        a, b = socket.socketpair()
+        self.addCleanup(b.close)
+        got = []
+        t = threading.Thread(target=lambda: got.append(self._recv(a)),
+                             daemon=True)
+        t.start()
+        time.sleep(0.1)              # let it block in recv()
+        start = time.monotonic()
+        abort_socket(a)
+        t.join(3)
+        self.assertFalse(t.is_alive())
+        self.assertLess(time.monotonic() - start, 1)
+        abort_socket(a)              # twice is harmless
+        abort_socket(None)
+
+    @staticmethod
+    def _recv(sock):
+        try:
+            return sock.recv(1)
+        except OSError as e:
+            return e
 
 
 if __name__ == "__main__":

@@ -84,7 +84,8 @@ class X509Test(unittest.TestCase):
             except Exception:
                 pass                     # the client gave up on the TLS
             done.set()
-        threading.Thread(target=serve, daemon=True).start()
+        st = threading.Thread(target=serve, daemon=True)
+        st.start()
         result = {}
 
         def run():
@@ -97,6 +98,10 @@ class X509Test(unittest.TestCase):
         t.start()
         done.wait(10)
         conn.close()
+        # The server may still be wrapping its socket in TLS: let it
+        # finish (it sees EOF now) before closing the socket it ends up
+        # with, or that SSLSocket is left open
+        st.join(10)
         server.sock.close()
         b.close()
         t.join(10)

@@ -8,9 +8,26 @@
 """Blocking buffered reader/writer over a socket (rdr::InStream/OutStream)."""
 
 import collections
+import socket
 import struct
 import threading
 import time
+
+
+def abort_socket(sock):
+    """Close ``sock`` so that a recv() blocked on it in another thread
+    returns at once.  Windows does that on close() alone; Linux and macOS
+    need shutdown() first, or the reader sleeps until the peer goes."""
+    if sock is None:
+        return
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except (OSError, ValueError):
+        pass                # not connected (yet), or already closed
+    try:
+        sock.close()
+    except OSError:
+        pass
 
 
 class ConnectionClosed(Exception):

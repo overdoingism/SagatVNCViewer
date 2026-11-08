@@ -29,6 +29,7 @@ from ..rfb import encodings as enc
 from ..rfb.connection import (Connection, ConnectionOptions,
                               DroppedBeforeSession, describe_text)
 from ..rfb.des import deobfuscate_password
+from ..rfb.stream import abort_socket
 from ..rfb.security import (AuthFailure, CertificateRetry, connect_socket,
                              parse_security_types)
 from ..rfb.stream import ConnectionClosed
@@ -591,11 +592,7 @@ class ViewerApp:
         self._close_connecting()
         if self.conn is not None:
             self.conn.close()
-        if self.connecting_sock is not None:
-            try:
-                self.connecting_sock.close()
-            except OSError:
-                pass
+        abort_socket(self.connecting_sock)
 
     def set_connecting_status(self, text):
         self.connecting_status = text

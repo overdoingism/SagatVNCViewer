@@ -245,7 +245,9 @@ Deliberate differences from upstream, kept on purpose:
   (password, certificate) use `ConnectionHandler._call_gui`. Client→server
   writes may come from any thread (`Stream.write` holds a lock). The GUI
   takes `fb.lock` non-blocking, because the decoder holds it while it reads
-  from the socket.
+  from the socket. Close sockets with `stream.abort_socket` (shutdown,
+  then close): on Linux/macOS close() alone doesn't wake the network
+  thread's recv().
 - **JPEG** (Tight subencoding 9 and the standalone JPEG encoding 21) is
   decoded with Pillow. QualityLevel is only sent when Pillow is available
   and NoJPEG is off, since sending it is what makes servers use JPEG.

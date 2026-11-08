@@ -342,6 +342,9 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(self.server.wait_for("ptr"), ("ptr", 79, 3, 1))
         self.conn.client_cut_text("café")
         self.assertEqual(self.server.wait_for("cut"), ("cut", "café"))
+        # The bell and cut text went the other way: a fence round trip
+        # proves the viewer has read them (it failed on slow CI runners)
+        self.server.sync()
         self.assertEqual(self.handler.bells, 1)
         self.assertEqual(self.handler.cut, ["hello\nworld"])
         self.finish()
