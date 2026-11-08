@@ -4,6 +4,7 @@
 """The Rust decoder loops (accel/) must give exactly the pixels, and fail
 on exactly the inputs, that the pure-Python code does."""
 
+import os
 import random
 import struct
 import unittest
@@ -38,6 +39,15 @@ def decode(encoding, payload, w, h, pc, native):
         return bytes(fb.data)
     finally:
         accel.lib = saved
+
+
+class LoadedTest(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get("SAGATVNC_REQUIRE_ACCEL"),
+                         "SAGATVNC_REQUIRE_ACCEL not set")
+    def test_library_is_loaded(self):
+        """CI and release builds: a missing library is a failure there,
+        not a skipped parity test."""
+        self.assertIsNotNone(accel.lib, accel.status)
 
 
 @unittest.skipIf(accel.lib is None, "native library not built: %s" %

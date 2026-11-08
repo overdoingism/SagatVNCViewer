@@ -51,6 +51,13 @@ accel/                 optional Rust cdylib: the sequential decoder loops
                        rre_subrects (C ABI, bounds-checked, error codes)
 packaging/             PyInstaller build (build_exe.py), build_accel.py,
                        generated icon
+setup.py               adds the Rust library to wheels (py3-none-<plat>);
+                       metadata is in pyproject.toml
+licenses/              licence texts: TigerVNC's (upstream LICENCE.TXT),
+                       OpenSSL, Rust std (shipped with wheels and exe)
+.github/workflows/     ci.yml (tests on Win/Linux/macOS, x64+ARM, with
+                       and without accel), release.yml (v* tag: wheels via
+                       cibuildwheel, sdist, exe, attestations, release)
 tests/                 unittest; fakeserver.py = encoders + scripted server
 upstream/tigervnc/     reference checkout of TigerVNC (git-ignored)
 ```
@@ -305,6 +312,12 @@ python -m sagatvnc -help                     # option list
 python -m sagatvnc host:1                    # run against a real server
 .venv\Scripts\python packaging\build_exe.py  # dist\SagatVNCViewer.exe
 ```
+Releases are built only by `.github/workflows/release.yml` (RELEASING.md):
+push a `v<__version__>` tag. Don't upload files built locally. Only
+Windows is used for real; Linux/macOS just have to pass CI, so keep the
+tests portable (Windows-only parts skip elsewhere).
+`SAGATVNC_REQUIRE_ACCEL=1` makes test_accel fail if the library didn't
+load (CI uses it); `SAGATVNC_BUILD_ACCEL` = auto/1/0 for setup.py.
 build_exe.py runs build_accel.py and bundles the DLL; without cargo it
 warns and builds a pure-Python exe. The log and *Connection info* say
 whether the native decoders are in use.

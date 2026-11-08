@@ -1,10 +1,38 @@
 # SagatVNC Viewer
 
-A VNC viewer written in pure Python (standard library only: `socket`, `ssl`,
-`zlib`, `tkinter`). It is a port of the viewer in
-[TigerVNC](https://github.com/TigerVNC/tigervnc).
+[繁體中文說明](README.zh-TW.md)
+
+I couldn't find a VNC viewer I liked on Windows, so I wrote one. It is
+a port of the [TigerVNC](https://github.com/TigerVNC/tigervnc) viewer to
+Python (standard library only: `socket`, `ssl`, `zlib`, `tkinter`), with
+optional Rust code for the slow decoder loops.
+
+It is made for Windows and used there every day. It also runs on Linux
+and macOS and passes the tests there, but nobody has really used it on
+them yet: reports are welcome.
 
 > Not affiliated with or endorsed by the TigerVNC project.
+
+## Download
+
+From [Releases](https://github.com/overdoingism/SagatVNCViewer/releases):
+
+- **Windows**: `SagatVNCViewer-<version>-windows-x64.zip` (or `-arm64`).
+  Unzip it and run `SagatVNCViewer.exe`. Nothing to install.
+- **Python** (any OS): `pip install` the `.whl` for your platform. The
+  wheels for Windows, Linux and macOS have the Rust decoders built in;
+  the `py3-none-any` wheel is pure Python.
+
+Everything there is built by GitHub Actions from the tagged commit, not
+on someone's PC, and each file has a signed build provenance
+attestation. To check a download:
+
+```bash
+gh attestation verify SagatVNCViewer-0.1.0-windows-x64.zip --repo overdoingism/SagatVNCViewer
+```
+
+The exe isn't code-signed, so SmartScreen may warn the first time
+(*More info* > *Run anyway*).
 
 ## Running
 
@@ -32,7 +60,7 @@ command line. If `ServerName` is empty, the connection dialog appears.
 TigerVNC parameters that this port doesn't implement (e.g. `FullScreenMode`)
 are ignored and logged.
 
-### Windows executable
+### Building the Windows executable yourself
 
 ```bash
 python -m venv .venv
@@ -322,4 +350,6 @@ the same license; [accel/README.md](accel/README.md) says where they come
 from. What the Windows exe bundles (Python, OpenSSL, Tcl/Tk, Pillow,
 PyInstaller's bootloader, the Rust standard library) is listed in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); the build copies their
-license texts to `dist\licenses\`.
+license texts to `dist\licenses\`. [licenses/](licenses) holds
+TigerVNC's own licence (GPLv2, the upstream's) and the texts that go
+with the wheels and the exe.

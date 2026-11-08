@@ -1,0 +1,52 @@
+# Tests on every platform, with the Rust decoders and without them.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }}, Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm, ubuntu-latest,
+             ubuntu-24.04-arm, macos-latest]
+        python: ["3.9", "3.14"]
+        exclude:
+          # No Windows ARM64 builds of Python 3.9
+          - os: windows-11-arm
+            python: "3.9"
+        include:
+          - os: windows-11-arm
+            python: "3.11"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: ./.github/actions/setup-rust
+      - name: Rust unit tests
+        run: cargo test --release --manifest-path accel/Cargo.toml
+      - name: Build the native decoders
+        run: python packaging/build_accel.py
+      - name: Install Pillow (scaling and JPEG tests)
+        run: python -m pip install pillow
+      - name: Tests with the native decoders
+        env:
+          SAGATVNC_REQUIRE_ACCEL: "1"
+        run: python -m unittest discover -s tests -t .
+      - name: Tests in pure Python
+        env:
+          SAGATVNC_NO_ACCEL: "1"
+        run: python -m unittest discover -s tests -t .

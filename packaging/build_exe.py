@@ -19,6 +19,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+LICENSES = os.path.join(ROOT, "licenses")
 
 
 def main():
@@ -61,14 +62,6 @@ def main():
     return result
 
 
-def _rust_sysroot():
-    try:
-        return subprocess.check_output(["rustc", "--print", "sysroot"],
-                                       text=True).strip()
-    except (OSError, subprocess.CalledProcessError):
-        return None
-
-
 def collect_licenses(dest, native):
     """Copy the license texts of everything bundled in the exe (see
     THIRD_PARTY_NOTICES.md).  Missing ones are reported, not fatal."""
@@ -78,12 +71,15 @@ def collect_licenses(dest, native):
         ("SagatVNC-LICENSE.txt", [os.path.join(ROOT, "LICENSE")]),
         ("THIRD_PARTY_NOTICES.md",
          [os.path.join(ROOT, "THIRD_PARTY_NOTICES.md")]),
+        # The upstream this is ported from (GPL-2.0-or-later)
+        ("TigerVNC-LICENCE.txt", [os.path.join(LICENSES,
+                                               "TigerVNC-LICENCE.TXT")]),
         ("Python-LICENSE.txt", [os.path.join(base, "LICENSE.txt")]),
         # Python's ssl module: OpenSSL 3 (Apache-2.0, no NOTICE file)
         ("OpenSSL-LICENSE.txt",
-         [os.path.join(HERE, "licenses", "OpenSSL-LICENSE.txt")]),
+         [os.path.join(LICENSES, "OpenSSL-LICENSE.txt")]),
         ("Tcl-Tk-license.terms",
-         glob.glob(os.path.join(base, "tcl", "tk8.6", "license.terms"))),
+         glob.glob(os.path.join(base, "tcl", "tk*", "license.terms"))),
         ("Pillow-LICENSE.txt",
          glob.glob(os.path.join(sys.prefix, "Lib", "site-packages",
                                 "pillow-*.dist-info", "licenses",
@@ -93,15 +89,14 @@ def collect_licenses(dest, native):
                                 "pyinstaller-*.dist-info", "licenses",
                                 "COPYING.txt"))),
     ]
-    sysroot = _rust_sysroot() if native else None
-    if sysroot:
-        doc = os.path.join(sysroot, "share", "doc", "rust")
+    if native:
+        import build_accel
+        notice = build_accel.rust_std_notice()
         wanted += [
-            ("Rust-std-COPYRIGHT.html",
-             [os.path.join(doc, "COPYRIGHT-library.html")]),
-            ("Rust-MIT.txt", [os.path.join(doc, "licenses", "MIT.txt")]),
+            ("Rust-std-COPYRIGHT.html", [notice] if notice else []),
+            ("Rust-MIT.txt", [os.path.join(LICENSES, "Rust-MIT.txt")]),
             ("Rust-Apache-2.0.txt",
-             [os.path.join(doc, "licenses", "Apache-2.0.txt")]),
+             [os.path.join(LICENSES, "Rust-Apache-2.0.txt")]),
         ]
     for name, sources in wanted:
         found = [f for f in sources if os.path.isfile(f)]

@@ -1,5 +1,6 @@
 [build-system]
-requires = ["setuptools>=64"]
+# 77: PEP 639 licence fields; setup.py adds the optional Rust decoders
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,19 +9,34 @@ dynamic = ["version"]
 description = "A pure-Python VNC viewer ported from the TigerVNC viewer"
 readme = "README.md"
 license = "GPL-3.0-or-later"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "licenses/*"]
 requires-python = ">=3.9"
 dependencies = []
-
-[project.optional-dependencies]
-# Smooth scaling of the remote desktop to the window (Lanczos/bicubic)
-scaling = ["pillow>=9.1"]
+keywords = ["vnc", "rfb", "remote-desktop", "tigervnc", "viewer"]
 classifiers = [
+    "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
     "Environment :: X11 Applications",
     "Environment :: Win32 (MS Windows)",
+    "Environment :: MacOS X",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
     "Topic :: System :: Networking",
+    "Topic :: Desktop Environment",
 ]
+
+[project.optional-dependencies]
+# Smooth scaling of the remote desktop to the window (Lanczos/bicubic),
+# and JPEG in Tight
+scaling = ["pillow>=9.1"]
+
+[project.urls]
+Homepage = "https://github.com/overdoingism/SagatVNCViewer"
+Source = "https://github.com/overdoingism/SagatVNCViewer"
+Issues = "https://github.com/overdoingism/SagatVNCViewer/issues"
+Upstream = "https://github.com/TigerVNC/tigervnc"
 
 [project.scripts]
 sagatvncviewer = "sagatvnc.__main__:main"

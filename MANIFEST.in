@@ -1,0 +1,10 @@
+# The sdist carries what setup.py needs to build the Rust decoders
+include setup.py
+include packaging/build_accel.py
+include accel/Cargo.toml accel/Cargo.lock accel/README.md
+recursive-include accel/src *.rs
+recursive-include licenses *
+include THIRD_PARTY_NOTICES.md README.md README.zh-TW.md
+recursive-include tests *.py *.pem *.key *.sh
+# Never a library built in the source tree
+global-exclude *.dll *.so *.dylib *.py[cod] __pycache__
