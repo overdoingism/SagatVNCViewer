@@ -19,6 +19,8 @@ cursors.
 """
 
 import atexit
+import collections
+import hashlib
 import os
 import shutil
 import struct
@@ -264,6 +266,8 @@ def fit_to_canvas(w, h, hot_x, hot_y, rgba, size):
 class CursorManager:
     """Keeps the canvas cursor in step with the server's cursor shape."""
 
+    CACHE_SIZE = 256           # distinct shapes kept loaded (see _load)
+
     def __init__(self, widget, always_cursor=False, cursor_type="dot",
                  remote_shape=True, blank_as_ibeam=True):
         self.widget = widget
@@ -276,9 +280,8 @@ class CursorManager:
         self.fallback = "dot" if cursor_type.lower() == "dot" else "arrow"
         self.shape = None          # (w, h, hot_x, hot_y, rgba) from server
         self.scale = 1.0
-        self.serial = 0
+        self.cache = collections.OrderedDict()  # sha1 -> (spec, path, holder)
         self.dir = None
-        self.current_file = None
         self.current_spec = None
         self.inside = True
         self.apply()
@@ -359,18 +362,61 @@ class CursorManager:
         size = system_cursor_size()
         if size:
             w, h, hx, hy, rgba = fit_to_canvas(w, h, hx, hy, rgba, size)
-        self.serial += 1
-        path = os.path.join(self._tempdir(), "c%d.cur" % self.serial)
-        with open(path, "wb") as f:
-            f.write(make_cur(w, h, hx, hy, rgba))
+        data = make_cur(w, h, hx, hy, rgba)
+        key = hashlib.sha1(data).hexdigest()
+        entry = self.cache.get(key)
+        if entry is None:
+            entry = self._load(key, data)
+            if entry is None:
+                self._set("arrow")
+                return
+        else:
+            self.cache.move_to_end(key)
+        self._set(entry[0])
+
+    def _load(self, key, data):
+        """Load a cursor into Tk once and keep it.
+
+        Tk on Windows never destroys a cursor it loaded from a file
+        (TkpFreeCursor is empty), so every "@file" it loads costs 6 GDI
+        and 2 USER handles for good. A new file per shape ran a long
+        session into the 10,000 GDI handle limit: cursors turned black,
+        the window froze and Tk crashed. So each distinct shape is loaded
+        once, and an unmapped frame holds it, because Tk would otherwise
+        forget it as soon as the canvas switches to another one and load
+        it again next time. Shapes repeat (arrow, I-beam, hand, the
+        frames of a busy animation), so the cache stays small; past
+        CACHE_SIZE the least recently used is dropped, which leaks only
+        that one."""
+        path = os.path.join(self._tempdir(), "c-%s.cur" % key[:20])
+        spec = "@" + path.replace("\\", "/")
         try:
-            self._set("@" + path.replace("\\", "/"))
+            with open(path, "wb") as f:
+                f.write(data)
+            holder = self._pin(spec)
         except Exception:
-            self._set("arrow")
-            return
-        old, self.current_file = self.current_file, path
-        if old:
+            _remove(path)
+            return None
+        entry = self.cache[key] = (spec, path, holder)
+        while len(self.cache) > self.CACHE_SIZE:
+            _key, (_spec, old_path, old_holder) = self.cache.popitem(
+                last=False)
             try:
-                os.remove(old)
-            except OSError:
+                old_holder.destroy()
+            except Exception:
                 pass
+            _remove(old_path)
+        return entry
+
+    def _pin(self, spec):
+        """A widget that keeps Tk's cursor for *spec* loaded (raises
+        TclError if Tk can't load it).  Never mapped."""
+        import tkinter
+        return tkinter.Frame(self.widget, cursor=spec)
+
+
+def _remove(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass

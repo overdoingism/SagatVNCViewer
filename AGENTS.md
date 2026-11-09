@@ -284,7 +284,11 @@ Deliberate differences from upstream, kept on purpose:
   stop drawing the cursor into the framebuffer. A non-DPI-aware winvnc
   draws it misplaced, which looked like a pointer-mapping bug but
   wasn't. `CursorManager` writes a 32 bpp .cur per shape (Windows only)
-  and scales it with the view.
+  and sizes it for the local display. Tk on Windows never frees a cursor
+  loaded from a file (6 GDI + 2 USER handles each; a day-long session hit
+  the 10,000 limit and crashed in tk86t.dll), so each distinct shape is
+  loaded once, cached by content and held by an unmapped frame
+  (`CursorManager._load`). Don't go back to a new file per shape.
 - **Clipboard**: ExtendedClipboard (UTF-8, CRLF, NUL-terminated, zlib
   for provide), following CConnection.cxx: reply to caps with
   UTF8|request|peek|notify|provide and size 0, request as soon as the

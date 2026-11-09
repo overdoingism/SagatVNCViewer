@@ -129,6 +129,56 @@ class FitToCanvasTest(unittest.TestCase):
         m.set_shape(1, 1, 0, 0, b"\0\0\0\0")
         self.assertEqual(wdg.cursor, "none")
 
+    def test_each_shape_is_loaded_once(self):
+        """Tk on Windows never frees a cursor loaded from a file
+        (TkpFreeCursor is empty): a new .cur per shape leaked 6 GDI
+        handles each and crashed a day-long session.  Repeated shapes
+        must reuse the cursor Tk already has."""
+        import os
+        from unittest import mock
+        from sagatvnc.viewer import cursor
+
+        class Widget:
+            cursor = None
+
+            def configure(self, cursor):
+                self.cursor = cursor
+
+        class Holder:
+            destroyed = False
+
+            def destroy(self):
+                self.destroyed = True
+
+        pinned = []
+
+        def pin(spec):
+            pinned.append((spec, Holder()))
+            return pinned[-1][1]
+
+        with mock.patch.object(cursor, "CUSTOM_SUPPORTED", True), \
+                mock.patch.object(cursor, "system_cursor_size",
+                                  lambda: None):
+            wdg = Widget()
+            m = cursor.CursorManager(wdg)
+            m._pin = pin
+            m.CACHE_SIZE = 2
+            red = b"\xff\0\0\xff" * 4
+            blue = b"\0\0\xff\xff" * 4
+            green = b"\0\xff\0\xff" * 4
+            for rgba in (red, blue, red, blue, red):
+                m.set_shape(2, 2, 0, 0, rgba)
+            self.assertEqual(len(pinned), 2)
+            self.assertEqual(wdg.cursor, pinned[0][0])
+            m.set_shape(2, 2, 0, 0, green)      # evicts blue, the oldest
+            self.assertEqual(len(pinned), 3)
+            self.assertTrue(pinned[1][1].destroyed)
+            self.assertFalse(os.path.exists(pinned[1][0][1:]))
+            self.assertFalse(pinned[0][1].destroyed)
+            m.set_shape(2, 2, 0, 0, red)
+            self.assertEqual(len(pinned), 3)
+            self.assertEqual(wdg.cursor, pinned[0][0])
+
     def test_enlarge_two_tone_by_1_5_stays_crisp(self):
         from sagatvnc.viewer.cursor import resize_cursor
         w, h, hx, hy, d = resize_cursor(9, 20, 4, 10, self.ibeam(), 1.5)
