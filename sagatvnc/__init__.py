@@ -7,4 +7,4 @@
 # (at your option) any later version.
 """SagatVNC Viewer - a pure-Python VNC viewer ported from TigerVNC."""
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
