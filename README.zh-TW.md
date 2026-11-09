@@ -1,3 +1,5 @@
+<p align="center"><img src="https://raw.githubusercontent.com/overdoingism/SagatVNCViewer/main/docs/logo.png" alt="SagatVNC Viewer logo" width="128"></p>
+
 # SagatVNC Viewer
 
 [English](README.md)
@@ -42,7 +44,7 @@ exe 沒有程式碼簽章，第一次執行時 SmartScreen 可能會跳警告，
 
 - 執行 exe 會先出現連線對話框，輸入 `主機:顯示編號`（例如 `myhost:1` 就是 port 5901）。
 - 也可以把 TigerVNC 存的 `.tigervnc` 檔拖到 exe 上。
-- 連線後按 **F8** 開選單，裡面有這些功能：
+- 連線後按 **F8**（或點視窗左上角的圖示）開選單。改設定時選單會留著，按 *Close menu*、Esc 或 F8 關閉。裡面有這些功能：
   - 畫質、縮放、全螢幕
   - 鍵盤設定、剪貼簿
   - 儲存設定

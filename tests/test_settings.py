@@ -74,6 +74,27 @@ class SaveTest(unittest.TestCase):
                              name)
 
 
+class WindowAtStartupTest(unittest.TestCase):
+    """F8 > Window at startup is saved as FullScreen / Maximize."""
+
+    def test_saved_and_loaded(self):
+        from sagatvnc.viewer.app import (start_window_choice,
+                                         start_window_params)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = os.path.join(d, "x.tigervnc")
+        for choice, want in (("window", (False, False)),
+                             ("maximized", (False, True)),
+                             ("fullscreen", (True, False))):
+            opts = Options()
+            opts.fullscreen, opts.maximize = start_window_params(choice)
+            self.assertEqual((opts.fullscreen, opts.maximize), want)
+            configfile.save(path, "h:1", opts)
+            loaded = Options()
+            configfile.load(path, loaded)
+            self.assertEqual(start_window_choice(loaded), choice)
+
+
 class EncodingChoiceTest(Base):
     def test_menu_encoding_change(self):
         """CConn::handleOptions() -> CConnection::updateEncodings(): the
@@ -198,6 +219,8 @@ class IconTest(unittest.TestCase):
         for size in (16, 24):
             self.assertEqual(base64.b64decode("".join(icon_data.PNGS[size])),
                              make_icon.png(size))
+        with open(make_icon.LOGO, "rb") as f:
+            self.assertEqual(f.read(), make_icon.png(make_icon.LOGO_SIZE))
 
 
 if __name__ == "__main__":

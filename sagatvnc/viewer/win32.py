@@ -87,3 +87,73 @@ def set_local_ime(widget, enabled):
     # hIMC = NULL with IACE_CHILDREN: no input context for the toplevel
     # and every child window (Tk's canvas included)
     return bool(imm32.ImmAssociateContextEx(hwnd, None, IACE_CHILDREN))
+
+
+WM_NCDESTROY = 0x0082
+WM_NCLBUTTONDOWN = 0x00A1
+WM_NCLBUTTONDBLCLK = 0x00A3
+HTSYSMENU = 3
+SUBCLASS_ID = 0x5A47        # any number; ours on the outer window
+
+
+class IconClick:
+    """A left click on the title bar icon calls ``callback()`` instead of
+    opening the window menu (Windows only; not in TigerVNC).  Tk has no way
+    to put a button in the title bar, so the icon opens the F8 menu.  The
+    window menu stays on a right click on the title bar; a double click on
+    the icon no longer closes the window.
+
+    Tk recreates the outer window on full screen changes, so call attach()
+    on every <Map>; it skips a window it already has."""
+
+    def __init__(self, callback):
+        self.callback = callback
+        self.hwnds = set()
+        self.proc = None
+
+    def attach(self, widget):
+        if sys.platform != "win32":
+            return False
+        import ctypes
+        from ctypes import wintypes as wt
+        try:
+            hwnd = int(widget.wm_frame(), 16)
+        except (ValueError, Exception):
+            return False
+        if not hwnd or hwnd in self.hwnds:
+            return False
+        if self.proc is None:
+            comctl = ctypes.windll.comctl32
+            proto = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wt.HWND, wt.UINT,
+                                       wt.WPARAM, wt.LPARAM, ctypes.c_size_t,
+                                       ctypes.c_size_t)
+            comctl.SetWindowSubclass.argtypes = [wt.HWND, proto,
+                                                 ctypes.c_size_t,
+                                                 ctypes.c_size_t]
+            comctl.RemoveWindowSubclass.argtypes = [wt.HWND, proto,
+                                                    ctypes.c_size_t]
+            comctl.DefSubclassProc.restype = ctypes.c_ssize_t
+            comctl.DefSubclassProc.argtypes = [wt.HWND, wt.UINT, wt.WPARAM,
+                                               wt.LPARAM]
+            self.comctl = comctl
+            self.proc = proto(self._proc)      # kept alive by self
+        if not self.comctl.SetWindowSubclass(hwnd, self.proc, SUBCLASS_ID,
+                                             0):
+            return False
+        self.hwnds.add(hwnd)
+        return True
+
+    def _proc(self, hwnd, msg, wparam, lparam, uid, ref):
+        try:
+            if msg in (WM_NCLBUTTONDOWN, WM_NCLBUTTONDBLCLK) and \
+                    wparam == HTSYSMENU:
+                if msg == WM_NCLBUTTONDOWN:
+                    self.callback()     # must only schedule, not block
+                return 0
+            if msg == WM_NCDESTROY:
+                self.comctl.RemoveWindowSubclass(hwnd, self.proc,
+                                                 SUBCLASS_ID)
+                self.hwnds.discard(hwnd)
+        except Exception:
+            pass
+        return self.comctl.DefSubclassProc(hwnd, msg, wparam, lparam)

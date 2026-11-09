@@ -12,12 +12,17 @@
 
 import os
 import tkinter as tk
+import webbrowser
 from tkinter import font as tkfont, ttk
 
 from .. import __version__
 from ..rfb.security import describe as describe_security
 from . import icon
 from .win32 import bring_to_front
+
+HOME_URL = "https://github.com/overdoingism/SagatVNCViewer/"
+TROUBLESHOOTING_URL = HOME_URL + "tree/main/troubleshooting"
+LINK_COLOUR = "#0b57d0"
 
 ABOUT_TEXT = (
     "SagatVNC Viewer %s\n\n"
@@ -53,6 +58,8 @@ def _styles(widget):
     style.configure("Heading.TLabel",
                     font=(base["family"], base["size"] + 4, "bold"))
     style.configure("Hint.TLabel", foreground=HINT_COLOUR)
+    style.configure("Link.TLabel", foreground=LINK_COLOUR,
+                    font=(base["family"], base["size"], "underline"))
     style.configure("Secure.TLabel", foreground=SECURE_COLOUR)
     style.configure("Caution.TLabel", foreground=CAUTION_COLOUR)
     style.configure("Insecure.TLabel", foreground=INSECURE_COLOUR)
@@ -194,7 +201,23 @@ class AboutDialog(_Modal):
         ttk.Label(text, text=name, style="Heading.TLabel").pack(anchor="w")
         ttk.Label(text, text=rest, justify="left").pack(anchor="w",
                                                         pady=(GAP, 0))
+        link_label(text, HOME_URL).pack(anchor="w", pady=(GAP, 0))
         self.button_bar([("Close", self.ok)])
+
+
+def open_url(url):
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+
+def link_label(master, url, text=None):
+    """A clickable link (Link.TLabel style, set up by _styles)."""
+    label = ttk.Label(master, text=text or url, style="Link.TLabel",
+                      cursor="hand2")
+    label.bind("<Button-1>", lambda e: open_url(url))
+    return label
 
 
 class ConnectingWindow(_Modal):

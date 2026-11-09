@@ -48,3 +48,30 @@ class RemoteDpiTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MenuStaysOpenTest(unittest.TestCase):
+    """The F8 menu comes back after a setting is changed; entries that act
+    on the remote computer, end the session or open a window close it."""
+
+    def closes(self, kind, label):
+        app = SimpleNamespace(MENU_CLOSERS=ViewerApp.MENU_CLOSERS)
+        return ViewerApp._menu_closes(app, kind, label)
+
+    def test_settings_keep_it_open(self):
+        for kind, label in (("checkbutton", "Traffic in title bar"),
+                            ("radiobutton", "Maximized"),
+                            ("checkbutton", "Send clipboard to remote"),
+                            ("command", "Refresh screen"),
+                            ("command", "Save settings")):
+            self.assertFalse(self.closes(kind, label), label)
+
+    def test_actions_close_it(self):
+        for kind, label in (("command", "Close menu"),
+                            ("command", "Disconnect"),
+                            ("command", "Send Ctrl-Alt-Del"),
+                            ("command", "Send F8"),
+                            ("command", "Open log folder"),
+                            ("command", "About SagatVNC Viewer..."),
+                            ("command", "Troubleshooting guide (web)...")):
+            self.assertTrue(self.closes(kind, label), label)

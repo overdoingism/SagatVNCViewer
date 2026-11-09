@@ -39,7 +39,7 @@ from .keysyms import NAMED
 from .parameters import config_dir, parse_server
 from .cursor import CursorManager
 from .scaler import Scaler, fit_size
-from .win32 import set_local_ime
+from .win32 import IconClick, set_local_ime
 from . import syskeys
 
 POLL_MS = 10
@@ -185,6 +185,18 @@ CONNECTING_DELAY_MS = 400   # connecting window only if it takes longer
 UNSAVED_COLOUR = "#b34700"  # F8 menu: Save settings with unsaved changes
 
 
+def start_window_choice(opts):
+    """F8 > Window at startup, from the FullScreen / Maximize parameters
+    (full screen wins, as in DesktopWindow)."""
+    return "fullscreen" if opts.fullscreen else \
+        "maximized" if opts.maximize else "window"
+
+
+def start_window_params(choice):
+    """-> (FullScreen, Maximize) for a Window at startup choice."""
+    return choice == "fullscreen", choice == "maximized"
+
+
 def security_summary(sec):
     """For Connection info: "TLSVnc, TLSv1.2 (ECDHE-...), encrypted"."""
     if sec is None or not sec.type_name:
@@ -267,6 +279,11 @@ class ViewerApp:
         self.resize_job = None
         self.last_clipboard = None
         self.fullscreen_var = tk.BooleanVar(value=False)
+        # F8 > Window at startup: saved as FullScreen / Maximize, so the
+        # Full screen toggle no longer decides what Save settings writes
+        self.start_window_var = tk.StringVar(
+            value=start_window_choice(options))
+        self.menu_pos = None       # where the F8 menu was last opened
         self.viewonly_var = tk.BooleanVar(value=bool(options.viewonly))
         self.desktop_size_sent = False
         self.menu = None
@@ -855,6 +872,10 @@ class ViewerApp:
             self.bind_input()
             root.protocol("WM_DELETE_WINDOW", self.quit)
             self.build_menu()
+            # The title bar icon opens the F8 menu (win32.IconClick)
+            self.icon_click = IconClick(
+                lambda: self.root.after(1, self.menu_from_icon))
+            root.bind("<Map>", self._attach_icon_click, add="+")
         self.resize_framebuffer(width, height, initial=True)
         self.root.deiconify()
         if self.opts.maximize:
@@ -1667,6 +1688,12 @@ class ViewerApp:
                               self.fullscreen_var.get()))
         m.add_command(label="Resize window to session",
                       command=self.resize_to_session)
+        sub = submenu("Window at startup")
+        for value, label in (("window", "Window"),
+                             ("maximized", "Maximized"),
+                             ("fullscreen", "Full screen")):
+            sub.add_radiobutton(label=label, value=value,
+                                variable=self.start_window_var)
         sub = submenu("When the window is resized")
         for value, label in (
                 ("remote", "Change the remote resolution"),
@@ -1794,7 +1821,8 @@ class ViewerApp:
         m.add_command(label="About SagatVNC Viewer...",
                       command=lambda: dialogs.show_about(self.root))
         m.add_separator()
-        m.add_command(label="Dismiss menu", command=lambda: None)
+        m.add_command(label="Close menu", command=lambda: None)
+        self._keep_menu_open(m)
         self.menu = m
 
     # -- X509 files (options dialog, Security tab: "Path to X509 CA
@@ -1936,13 +1964,68 @@ class ViewerApp:
         sub.add_separator()
         sub.add_command(label="Open log folder",
                         command=self.open_log_folder)
+        sub.add_command(label="Troubleshooting guide (web)...",
+                        command=lambda: dialogs.open_url(
+                            dialogs.TROUBLESHOOTING_URL))
 
-    def show_menu(self, event):
+    # Entries that close the F8 menu: they act on the remote computer,
+    # end the session or open a window.  Every other entry leaves the
+    # menu open (it comes back after the choice), so several settings can
+    # be changed in one go; Close menu, Esc, the menu key or a click
+    # elsewhere close it.  Not in TigerVNC.
+    MENU_CLOSERS = ("Disconnect", "Close menu")
+
+    def _menu_closes(self, kind, label):
+        return label in self.MENU_CLOSERS or label.endswith("...") or \
+            kind == "command" and label.startswith(("Send ", "Open "))
+
+    def _keep_menu_open(self, menu):
+        """Make the entries of ``menu`` and its submenus reopen the menu
+        after their command, unless _menu_closes says otherwise."""
+        for i in range((menu.index("end") or -1) + 1):
+            kind = menu.type(i)
+            if kind == "cascade":
+                self._keep_menu_open(
+                    self.root.nametowidget(menu.entrycget(i, "menu")))
+                continue
+            if kind not in ("command", "checkbutton", "radiobutton") or \
+                    self._menu_closes(kind, menu.entrycget(i, "label")):
+                continue
+            old = str(menu.entrycget(i, "command"))
+            menu.entryconfigure(i, command=lambda old=old: self._menu_pick(
+                old))
+
+    def _menu_pick(self, command):
+        try:
+            if command:
+                self.root.tk.eval(command)
+        finally:
+            if self.menu_pos is not None:
+                self.root.after(1, self.reopen_menu)
+
+    def reopen_menu(self):
+        if self.menu is not None and self.menu_pos is not None and \
+                self.root.winfo_exists():
+            self.show_menu(None, *self.menu_pos)
+
+    def _attach_icon_click(self, event):
+        if event.widget is self.root:
+            self.icon_click.attach(self.root)
+
+    def menu_from_icon(self):
+        """Clicking the title bar icon: the F8 menu, just below it."""
+        if self.menu is not None:
+            self.show_menu(None, self.canvas.winfo_rootx(),
+                           self.canvas.winfo_rooty())
+
+    def show_menu(self, event, x=None, y=None):
         self.release_all_keys()
         self.mark_unsaved()
         self._update_cert_menu()
-        x = self.canvas.winfo_rootx() + 20
-        y = self.canvas.winfo_rooty() + 20
+        self.menu_pos = (x, y)     # None: next to the desktop's corner
+        if x is None:
+            x = self.canvas.winfo_rootx() + 20
+            y = self.canvas.winfo_rooty() + 20
         try:
             self.menu.tk_popup(x, y)
         finally:
@@ -1987,7 +2070,8 @@ class ViewerApp:
         fullScreen)."""
         if o is None:
             o = self.opts
-        o.fullscreen = bool(self.fullscreen_var.get())
+        o.fullscreen, o.maximize = start_window_params(
+            self.start_window_var.get())
         o.viewonly = bool(self.viewonly_var.get())
         o.scaling = "Auto" if self.scaling_var.get() else "Off"
         o.remoteresize = bool(self.remote_resize_var.get())

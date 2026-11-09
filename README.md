@@ -1,3 +1,5 @@
+<p align="center"><img src="https://raw.githubusercontent.com/overdoingism/SagatVNCViewer/main/docs/logo.png" alt="SagatVNC Viewer logo" width="128"></p>
+
 # SagatVNC Viewer
 
 [繁體中文說明](README.zh-TW.md)
@@ -57,10 +59,13 @@ Parameters this port doesn't implement are ignored and logged.
 
 ### The F8 menu
 
-Press **F8** (`MenuKey`) in the session to open it, again or Esc to close:
+Press **F8** (`MenuKey`) in the session, or click the icon at the
+top left of the window, to open it. It stays open while you change
+settings; *Close menu*, Esc or F8 closes it.
 
 - Disconnect
-- Window: full screen, resize to session, *When the window is resized*,
+- Window: full screen, resize to session, *Window at startup*
+  (window, maximized or full screen), *When the window is resized*,
   remote DPI compensation, *Traffic in title bar*
 - *Picture quality*: auto select, encoding, colour depth, JPEG, zlib level
 - *Input*: view only, remote cursor shape, local input method,
@@ -70,7 +75,7 @@ Press **F8** (`MenuKey`) in the session to open it, again or Esc to close:
 - Refresh screen
 - Save settings, Save settings as...
 - *Rust decoders*: ticked when loaded (untick to compare with Python)
-- *Troubleshooting*: log level, log folder
+- *Troubleshooting*: log level, log folder, the troubleshooting guide
 - Connection info, About
 
 *Save settings* writes your menu changes to the `.tigervnc` file the
