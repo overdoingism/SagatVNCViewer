@@ -10,6 +10,7 @@ import struct
 import sys
 import tempfile
 import unittest
+import zlib
 
 from sagatvnc.rfb import encodings as enc
 from sagatvnc.viewer import configfile, icon_data
@@ -217,10 +218,30 @@ class IconTest(unittest.TestCase):
             sys.path.pop(0)
         self.assertEqual(tuple(sorted(icon_data.PNGS)), make_icon.APP_SIZES)
         for size in (16, 24):
-            self.assertEqual(base64.b64decode("".join(icon_data.PNGS[size])),
-                             make_icon.png(size))
+            self.assertEqual(
+                png_content(base64.b64decode("".join(icon_data.PNGS[size]))),
+                png_content(make_icon.png(size)))
         with open(make_icon.LOGO, "rb") as f:
-            self.assertEqual(f.read(), make_icon.png(make_icon.LOGO_SIZE))
+            self.assertEqual(png_content(f.read()),
+                             png_content(make_icon.png(make_icon.LOGO_SIZE)))
+
+
+def png_content(data):
+    """Chunks of a PNG with IDAT decompressed.
+
+    The compressed bytes depend on the zlib build (Python 3.14 on Windows
+    ships zlib-ng), so only the decoded content is compared.
+    """
+    chunks, idat, pos = [], b"", 8
+    while pos < len(data):
+        length, tag = struct.unpack(">I4s", data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + length]
+        if tag == b"IDAT":
+            idat += body
+        else:
+            chunks.append((tag, body))
+        pos += 12 + length
+    return chunks, zlib.decompress(idat)
 
 
 if __name__ == "__main__":
