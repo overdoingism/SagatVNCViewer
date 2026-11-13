@@ -66,11 +66,12 @@ class SaveTest(unittest.TestCase):
         opts = parse_args(["-PreferredEncoding=Hextile", "-NoJPEG",
                            "-CustomCompressLevel", "-CompressLevel=9",
                            "-AutoSelect=0", "-Scaling=Off"])
+        opts.username = "alice"
         configfile.save(self.path, "h:1", opts)
         loaded = Options()
         configfile.load(self.path, loaded)
         for name in ("preferredencoding", "nojpeg", "customcompresslevel",
-                     "compresslevel", "autoselect", "scaling"):
+                     "compresslevel", "autoselect", "scaling", "username"):
             self.assertEqual(getattr(loaded, name), getattr(opts, name),
                              name)
 

@@ -37,6 +37,10 @@ another and OK becomes *Reconnect* (RFB settles security once per
 connection); what you typed is reused. `PreferredSecurity` remembers the
 pick.
 
+The dialog fills in the user name typed last (`UserName`; *Save
+settings* writes it to the `.tigervnc` file). The local input method is
+off in the password field.
+
 ## X509 certificates
 
 Nothing is needed on the viewer side. As in TigerVNC, the server's

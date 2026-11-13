@@ -655,10 +655,14 @@ class ViewerApp:
             security=(sec.type_name, sec.tls_version) if sec else None,
             choices=[(t, enc.sec_name(t))
                      for t in self.conn.security_choices],
-            current=sec.type_num if sec else None).run()
+            current=sec.type_num if sec else None,
+            username=self.opts.username).run()
         if res is None:
             raise Cancelled()
         user, password, keep, switch = res
+        if need_username and user:
+            # Not in TigerVNC: offered next time, saved by Save settings
+            self.opts.username = user
         if switch is not None:
             # Takes effect for this session and is saved by Save settings;
             # what was typed is used for the new connection

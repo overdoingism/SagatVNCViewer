@@ -18,7 +18,7 @@ from tkinter import font as tkfont, ttk
 from .. import __version__
 from ..rfb.security import describe as describe_security
 from . import icon
-from .win32 import bring_to_front
+from .win32 import bring_to_front, set_local_ime
 
 HOME_URL = "https://github.com/overdoingism/SagatVNCViewer/"
 TROUBLESHOOTING_URL = HOME_URL + "tree/main/troubleshooting"
@@ -416,16 +416,19 @@ class AuthDialog(_Modal):
     """AuthDialog.cxx: username and password."""
 
     def __init__(self, parent, need_username, secure, host,
-                 offer_keep=False, security=None, choices=(), current=None):
+                 offer_keep=False, security=None, choices=(), current=None,
+                 username=""):
         """``choices``: (number, name) of the security types this server
         offered that we could use, safest first; ``current`` is the one in
-        use.  Picking another makes OK reconnect with it (SagatVNC)."""
+        use.  Picking another makes OK reconnect with it (SagatVNC).
+        ``username``: the name typed last time (UserName); without one,
+        the local user name."""
         super().__init__(parent, "VNC authentication")
         self.header("Password required" if not need_username else
                     "Sign in", "Server: %s" % host)
         frame = self.body()
-        self.user = tk.StringVar(value=os.environ.get("USER") or
-                                 os.environ.get("USERNAME") or "")
+        self.user = tk.StringVar(value=username or os.environ.get("USER")
+                                 or os.environ.get("USERNAME") or "")
         self.password = tk.StringVar()
         row = 0
         if need_username:
@@ -439,6 +442,12 @@ class AuthDialog(_Modal):
         pe = ttk.Entry(frame, textvariable=self.password, show="\u2022",
                        width=ENTRY_WIDTH)
         pe.grid(row=row, column=1, sticky="we", ipady=3)
+        # No local IME while typing the password, like Windows' own
+        # password boxes: a composition window would show the keys, and
+        # composed text isn't what the server checks (SagatVNC; Tk's
+        # entry is no native password box, so Windows doesn't do it)
+        pe.bind("<FocusIn>", lambda e: set_local_ime(self, False), add="+")
+        pe.bind("<FocusOut>", lambda e: set_local_ime(self, True), add="+")
         row += 1
         # AuthDialog.cxx: only offered when reconnecting is possible
         self.keep = tk.BooleanVar(value=False)

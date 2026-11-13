@@ -105,6 +105,11 @@ PARAMS = [
           "Security type to use when the server offers several that "
           "SecurityTypes allows (default: the safest). Picked in the login "
           "dialog. SagatVNC only"),
+    Param("UserName", str, "",
+          "User name for the login dialog (Plain, TLSPlain, X509Plain). "
+          "The last name typed there is kept and saved by Save settings. "
+          "Not in TigerVNC (RealVNC's name for it); default: the local "
+          "user name"),
     Param("PasswordFile", str, "", "Password file for VNC authentication",
           aliases=("passwd",)),
     Param("X509CA", str, "",

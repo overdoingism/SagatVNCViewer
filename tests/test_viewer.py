@@ -2,9 +2,12 @@
 # Copyright (C) 2026 SagatVNC Viewer contributors
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+import os
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
+from sagatvnc.viewer import dialogs
 from sagatvnc.viewer.app import ViewerApp
 from sagatvnc.viewer.parameters import parse_args
 
@@ -75,3 +78,54 @@ class MenuStaysOpenTest(unittest.TestCase):
                             ("command", "About SagatVNC Viewer..."),
                             ("command", "Troubleshooting guide (web)...")):
             self.assertTrue(self.closes(kind, label), label)
+
+
+class UserNameTest(unittest.TestCase):
+    """The login dialog offers the user name typed last (UserName)."""
+
+    def setUp(self):
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("VNC_USERNAME", "VNC_PASSWORD")}
+        patcher = mock.patch.dict(os.environ, env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.offered = []
+        self.typed = None
+        test = self
+
+        class FakeDialog:
+            def __init__(self, parent, need_username, *args, **kw):
+                test.offered.append(kw["username"])
+
+            def run(self):
+                return test.typed
+
+        patcher = mock.patch.object(dialogs, "AuthDialog", FakeDialog)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.app = SimpleNamespace(
+            opts=parse_args([]), saved_credentials=None,
+            pending_credentials=None, root=None, host="h:1",
+            conn=SimpleNamespace(security=None, security_choices=[]))
+
+    def ask(self, need_username, typed):
+        self.typed = typed
+        return ViewerApp._ask_credentials(self.app, need_username)
+
+    def test_remembered_and_offered_again(self):
+        self.assertEqual(self.ask(True, ("alice", "pw", False, None)),
+                         ("alice", "pw"))
+        self.assertEqual(self.app.opts.username, "alice")
+        self.ask(True, ("bob", "pw", False, None))
+        self.assertEqual(self.offered, ["", "alice"])
+        self.assertEqual(self.app.opts.username, "bob")
+
+    def test_from_the_command_line(self):
+        self.app.opts = parse_args(["-UserName=carol"])
+        self.ask(True, ("carol", "pw", False, None))
+        self.assertEqual(self.offered, ["carol"])
+
+    def test_password_only_keeps_it(self):
+        self.app.opts.username = "alice"
+        self.ask(False, ("", "pw", False, None))
+        self.assertEqual(self.app.opts.username, "alice")

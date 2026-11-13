@@ -138,7 +138,10 @@ Deliberate differences from upstream, kept on purpose:
   offers. `Connection.security_choices` collects what both stages offered
   for the dialog; picking another raises `SwitchSecurity` and the viewer
   reconnects (`ViewerApp.reconnect`) with the pick and the typed
-  credentials (`pending_credentials`). Types without a password (None,
+  credentials (`pending_credentials`). The dialog offers the user name
+  typed last (`UserName`, Python-only: upstream has no such parameter)
+  and turns the local IME off while the password field has focus.
+  Types without a password (None,
   TLSNone, X509None) show no dialog, so there is nothing to switch there.
 - The cursor: the server's shape by default, togglable to the plain
   arrow (F8 menu, `RemoteCursorShape`). Every cursor encoding is always
