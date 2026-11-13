@@ -33,7 +33,7 @@
 想確認下載的檔案確實出自這裡，可以用 `gh` 驗證：
 
 ```bash
-gh attestation verify SagatVNCViewer-0.2.1-windows-x64.zip --repo overdoingism/SagatVNCViewer
+gh attestation verify SagatVNCViewer-0.2.2-windows-x64.zip --repo overdoingism/SagatVNCViewer
 ```
 
 也可以拿 Release 裡的 `SHA256SUMS` 比對雜湊值。

@@ -30,7 +30,7 @@ on someone's PC, and each file has a signed build provenance
 attestation. To check a download:
 
 ```bash
-gh attestation verify SagatVNCViewer-0.2.1-windows-x64.zip --repo overdoingism/SagatVNCViewer
+gh attestation verify SagatVNCViewer-0.2.2-windows-x64.zip --repo overdoingism/SagatVNCViewer
 ```
 
 The exe isn't code-signed, so SmartScreen may warn the first time
